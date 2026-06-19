@@ -661,6 +661,7 @@ on push:
 | gemotest.ru | T1 | `/moskva/catalog/...` | 66 | ~3 300 | High — data-eec-* атрибуты, slug с "ё" осторожно |
 | helix.ru | T2 | `/catalog/190-vse-analizy?page=N` | 90 | 1 078 | High — embedded JSON `G.json./api/...`, total=1078 |
 | altamedplus.ru | T1+discovery | `/services/**` (distributed) | ~294 | ~900 (после дедупа) | Medium — 2 формата таблиц, нет единого прайса, discovery crawler нужен |
+| medsi.ru | **Hybrid T1+T3** | services SEO + labmarket SPA | ~3 011 | ~1 250 services + 1 086 lab tests | Medium-High — sitemap полный, но цены по клиникам запрещены в robots.txt |
 
 ## Приложение B. Селекторы / паттерны (выжимка)
 
@@ -766,6 +767,149 @@ deduplication:
   priority: cure > vector > other  # cure-страница приоритетнее
 schedule: "0 4 * * 1"  # понедельник 04:00 ( реже, т.к. больше страниц)
 ```
+
+---
+
+### Medsi (Hybrid T1 + T3)
+
+**Архитектурная особенность:** сайт разделён на 2 независимых каталога с разными
+технологиями:
+
+1. **`/services/**`** — Битрикс + Vue SSR-фрагменты. 1 248 страниц услуг.
+   Цены доступны **двумя способами**:
+   - **T1 path (curl, plain HTML):** SEO-блок `<p class="hdn">Прием специалиста: NAME - от PRICE руб.; ...</p>`
+     — содержит **минимальные** цены по всем клиникам, без разбивки.
+   - **T2 path (page_reader / Playwright):** Vue-rendered `med-service-block__type-item-price-num-inner`
+     — конкретные цены для одной клиники (определяется IP/cookie).
+
+2. **`/labmarket/**`** — SPA на Vue, 1 086 анализов SmartLab. Полный список URL
+   доступен в sitemap, но цены **только после JS-execution**.
+
+**Критическое ограничение robots.txt:**
+```
+Disallow: /*clinic=       ← Запрещён параметр привязки к клинике
+Disallow: /*?             ← Запрещены ВСЕ query-параметры
+```
+**Этическое решение:** собираем только SEO-блок (минимальные цены) с `/services/`
+без `?clinic=`. Это полностью соответствует robots.txt и даёт 1 250 услуг с
+минимальными ценами по Москве.
+
+**Sitemap (полный и достоверный):**
+- `https://medsi.ru/sitemap.xml` → index
+- `https://medsi.ru/sitemaps/sitemap-0.xml` → 5 001 URL
+- `https://medsi.ru/sitemaps/sitemap-1.xml` → 4 738 URL
+- Категории: 1 248 services + 677 clinics + 1 094 labmarket + 1 975 doctors + 1 033 articles
+
+**Discovery:** не нужен — sitemap полный. Просто фильтруем URLs по паттерну.
+
+**Парсеры:**
+
+Parser 1 — SEO block на `/services/{slug}/` (T1, plain HTML):
+```regex
+context:  <p class="hdn">(Прием специалиста:|Услуги:|Описание услуг:)\s*(.+?)</p>
+item:     ([^.]+?)\s*-\s*(?:от\s+)?(\d[\d\s]*)\s*руб\.
+```
+Поля: `name`, `price_min` (с пометкой `is_min_price: true`, т.к. цены "от X руб.")
+Валюта: `руб.` (словом, не ₽)
+
+Parser 2 — Vue-rendered prices (T2, page_reader):
+```regex
+context:  med-service-block__type-item--service
+name:     med-service-block__type-item-name _service-name[^"]*">\s*([^<]+?)\s*</div>
+price:    price-num-inner[^>]*>\s*(?:<!---->)?\s*<span[^>]*>(.+?)<span class="rub">руб\.</span>
+clinic:   med-service-block__type-item-name--clinic[^"]*">\s*([^<]+?)\s*</div>
+street:   med-service-block__type-item-street[^"]*">\s*([^<]+?)\s*</div>
+```
+Особенности:
+- `&nbsp;` как HTML-entity (6 символов), НЕ unicode `\u00A0` — нужна декодировка
+- `data-v-{hash}` атрибуты от Vue SSR — игнорировать
+- Цена = конкретная для клиники (не "от")
+- Привязка к clinic: `clinic` + `street` в detail-info блоке
+
+Parser 3 — Labmarket SPA (T3, требует JS-execution):
+```regex
+context:  class="slider-item-wrapper"  или  class="one_of_test"
+name:     href="(/labmarket/service/[^"]+)"\s+class="p_test_name"[^>]*>\s*([^<]+?)\s*</a>
+price:    <span class="lb-test__price-btn-mod">от</span>\s*<span>\s*(\d[\d\s]*)\s*<span[^>]*>\s*₽
+```
+Структура на главной (60 популярных тестов):
+- `<a class="p_test_name" href="/labmarket/service/{slug}/">NAME</a>`
+- `<span class="lb-test__price-btn-mod">от</span> <span>1500 <span>₽</span>`
+
+Индивидуальная страница `/labmarket/service/{slug}/`:
+- `<div class="total-info_price">Цена: от 270 ₽*</div>` — цена
+- `<div class="total-info_deadline_text">Срок исполнения: 1 календарный день...</div>` — срок
+
+**Два уровня цен для услуг `/services/`:**
+- **Min-цена** (по всем клиникам): доступна легально через SEO-блок
+- **Конкретная цена по клинике**: требует `?clinic={slug}` — **запрещено robots.txt**
+
+**Уникальный ключ:**
+- services: `normalize(name)` — нет stable ID
+- labmarket: `slug` из URL (`/labmarket/service/{slug}/`) — стабильно
+
+**Validation rules:**
+- `min_items_services: 800` (из 1 248 страниц ~65% имеют SEO-блок)
+- `min_items_labmarket: 1000` (из 1 086 service-страниц)
+- `price_range: [50, 500000]` ₽
+- `alert_if_seo_block_missing_on: 50%` страниц (если SEO-блок пропал >50% — редизайн)
+
+**Нагрузка:**
+- `/services/` страницы: ~400 КБ × 1 248 = ~488 МБ (curl, без JS)
+- `/labmarket/service/` страницы: ~360 КБ × 1 086 = ~382 МБ (page_reader с JS)
+- `/clinics/`: ~300 КБ × 677 = ~198 МБ (опционально, для метаданных клиник)
+- **Итого: ~1 ГБ**, ~3 011 страниц
+- Sequential (1 req/2s): ~100 минут
+- Parallel (10 threads): ~10 минут
+
+**Spec-схема (концепт):**
+```yaml
+competitor: medsi
+base_url: https://medsi.ru
+tier: hybrid
+strategies:
+  services:
+    strategy: static_html_with_seo_block
+    discovery: sitemap
+    sitemap_urls:
+      - https://medsi.ru/sitemaps/sitemap-0.xml
+      - https://medsi.ru/sitemaps/sitemap-1.xml
+    url_filter: '/services/[^/]+/$'  # только leaf, без /section-*/
+    parser:
+      type: seo_block_regex
+      context: '<p class="hdn">(Прием специалиста:|Услуги:|Описание услуг:)\s*(.+?)</p>'
+      item: '([^.]+?)\s*-\s*(?:от\s+)?(\d[\d\s]*)\s*руб\.'
+      fields:
+        name: { group: 1, post: strip_normalize }
+        price_min: { group: 2, transform: parse_int }
+        is_min_price: true
+    robots_compliance:
+      disallow: ['?clinic=', '?*']
+      note: 'Собираем только минимальные цены из SEO-блока'
+
+  labmarket:
+    strategy: spa_js_rendered
+    fetcher: page_reader  # z-ai SDK с JS-execution
+    discovery: sitemap
+    url_filter: '/labmarket/service/[^/]+/$'
+    parser:
+      type: html_regex
+      context: 'total-info_price'
+      item: 'Цена:\s*от\s*(\d[\d\s]*)\s*₽'
+      fields:
+        price_min: { group: 1, transform: parse_int }
+        is_min_price: true
+      extra:
+        deadline: '<div class="total-info_deadline_text">\s*Срок исполнения:\s*([^<]+)</div>'
+    expected_pages: 1086
+    schedule: "0 5 * * *"  # ежедневно в 05:00
+    note: 'Цены "от" — минимальные по клиникам сети'
+```
+
+**Открытые вопросы по Medsi:**
+1. Достаточно ли минимальных цен ("от X руб.") для бизнес-задачи? Или нужны конкретные по клиникам? (если да — нужно юридически согласовывать с Medsi или использовать прокси-серверы в разных регионах для SSR-геолокации)
+2. Labmarket — это анализы SmartLab, отдельный бренд. Включать ли в сравнение с клиниками? (Они конкурируют с Gemotest/Helix напрямую, но не с Veramed/Altamed)
+3. Срок исполнения есть только на labmarket. На /services/ — нет. ОК?
 
 ---
 

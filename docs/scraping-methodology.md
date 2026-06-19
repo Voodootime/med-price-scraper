@@ -655,11 +655,12 @@ on push:
 
 ## Приложение A. Карта разведанных сайтов
 
-| Сайт | Тир | URL прайса | Кол-во услуг | Spec-готовность |
-|---|---|---|---|---|
-| veramed-clinic.ru | T1 | `/price/` | 3 261 (3 тарифа) | High — вёрстка стабильная, классы явные |
-| gemotest.ru | T1 | `/moskva/catalog/...` ×66 | ~3 300 | High — data-eec-* атрибуты, slug с "ё" осторожно |
-| helix.ru | T2 | `/catalog/190-vse-analizy?page=N` ×90 | 1 078 | High — embedded JSON `G.json./api/...`, total=1078 |
+| Сайт | Тир | URL прайса | Страниц | Кол-во услуг | Spec-готовность |
+|---|---|---|---|---|---|
+| veramed-clinic.ru | T1 | `/price/` | 1 | 3 261 (3 тарифа) | High — вёрстка стабильная, классы явные |
+| gemotest.ru | T1 | `/moskva/catalog/...` | 66 | ~3 300 | High — data-eec-* атрибуты, slug с "ё" осторожно |
+| helix.ru | T2 | `/catalog/190-vse-analizy?page=N` | 90 | 1 078 | High — embedded JSON `G.json./api/...`, total=1078 |
+| altamedplus.ru | T1+discovery | `/services/**` (distributed) | ~294 | ~900 (после дедупа) | Medium — 2 формата таблиц, нет единого прайса, discovery crawler нужен |
 
 ## Приложение B. Селекторы / паттерны (выжимка)
 
@@ -683,6 +684,88 @@ json_blob: "G\.json\./api/catalog/items/list/v2[^"]+"\s*:\s*\{"body":(\{)
 ```
 JSON-схема: `{ total: number, catalogItems: [{ id, hxid, title, price, marketPrice, currency, estimateInfo, isComplex }] }`
 Уникальный ключ: `(hxid, cityId)` — стабильно, hxid человеко-читаемый (02-005)
+
+### Altamed+ (T1 + discovery crawler)
+
+**Архитектурная особенность:** единого прайса нет. Цены распределены по ~294
+индивидуальным страницам услуг. 31% страниц не имеют прайса вообще (информационные).
+
+**Discovery strategy:** BFS-обход от `/services/`:
+1. `/services/` → список топовых разделов
+2. `/services/vectors/` → 41 медицинское направление
+3. `/services/cure/` → 243 индивидуальные процедуры
+4. `/services/analysis_and_diagnostics/` → 4 диагностических раздела
+
+**Два формата таблиц:**
+
+Format 1 — `table-price` (основной, ~80% страниц):
+```regex
+<tr>\s*<td>\s*(.+?)\s*</td>\s*<td>\s*<div class="price">\s*(.+?)\s*<span>руб\.</span>\s*</div>\s*</td>\s*</tr>
+```
+Цена: "3 000" (пробел-разделитель), валюта: `<span>руб.</span>`
+
+Format 2 — `table_min` (стоматология, ~20% страниц):
+```regex
+<tr>\s*<td[^>]*>\s*(.+?)\s*</td>\s*<td[^>]*>\s*((?:от\s+)?[\d\s\u00A0]+₽)\s*</td>\s*</tr>
+```
+Особенности:
+- Заголовки секций через `<tr><td colspan="2">SECTION_TITLE</td></tr>` — нужно пропускать
+- Цена: "1 200 ₽" или "от 6 500 ₽" (префикс "от" = минимальная цена)
+- Разделитель тысяч: пробел ИЛИ `&nbsp;` — нормализовать оба
+
+**Дедупликация:** `(normalized_name)` — та же услуга встречается на vector-странице
+и на cure-подстранице. Пример: "Регистрация электрокардиограммы" есть и на
+`/services/vectors/kardiologiya/` (700 руб.), и на
+`/services/cure/elektrokardiogramma-ekg/` (700 руб.) — та же цена.
+
+**Уникальный ключ:** нет stable ID. Использовать `normalize(name)` (lowercase,
+trim, удалить лишние пробелы). При конфликте цен — брать с страницы более
+специфичной (cure > vector).
+
+**Validation rules (spec-specific):**
+- `min_items_total: 500` (после дедупа)
+- `pages_with_prices_ratio: 0.6-0.8` (ожидается 60-80% страниц имеют прайс)
+- `price_range: [100, 500000]` ₽
+- `allow_zero_items_per_page: true` (31% страниц информационные)
+- `alert_if_pages_with_prices_drops_below: 120` (из 243 cure-страниц)
+
+**Spec-схема (концепт):**
+```yaml
+competitor: altamed
+base_url: https://www.altamedplus.ru
+tier: T1
+strategy: distributed_static_html
+discovery:
+  type: bfs_crawl
+  seeds:
+    - /services/
+    - /services/vectors/
+    - /services/cure/
+    - /services/analysis_and_diagnostics/
+  link_pattern: '/services/(vectors|cure|analysis_and_diagnostics|cosmetology|stomatology)/[^"#+]/$'
+  max_depth: 3
+  expected_pages: 294
+parsers:
+  - name: table_price
+    selector: 'table.table-price'
+    item_pattern: '<tr>\s*<td>\s*(.+?)\s*</td>\s*<td>\s*<div class="price">\s*(.+?)\s*<span>руб\.</span>'
+    fields:
+      name: { group: 1, post: strip_tags_normalize }
+      price: { group: 2, transform: parse_rub_space }
+  - name: table_min
+    selector: 'table.table_min'
+    item_pattern: '<tr>\s*<td[^>]*>\s*(.+?)\s*</td>\s*<td[^>]*>\s*((?:от\s+)?[\d\s\u00A0]+₽)\s*</td>'
+    skip_rows_with: 'colspan'
+    fields:
+      name: { group: 1, post: strip_tags_normalize }
+      price_raw: { group: 2 }
+      price: { from: price_raw, transform: parse_rub_unicode }
+      is_min_price: { from: price_raw, transform: 'value.startsWith("от")' }
+deduplication:
+  key: normalize(name)
+  priority: cure > vector > other  # cure-страница приоритетнее
+schedule: "0 4 * * 1"  # понедельник 04:00 ( реже, т.к. больше страниц)
+```
 
 ---
 

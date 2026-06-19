@@ -864,13 +864,20 @@ on push:
 | altamedplus.ru | T1+discovery | `/services/**` (только МО — вся сеть локальная) | ~294 | ~900 (после дедупа) | 82 МБ | `none` (одна локация) | Medium |
 | medsi.ru services | T1 | `/services/{slug}/` (SEO-блок, только min-цены Москвы) | 1 248 | ~1 250 (только min-цены по Москве) | ~488 МБ | `none` (SEO-блок уже агрегирует по Москве) | Medium-High |
 | medsi.ru labmarket | T3 | `/labmarket/service/{slug}/` (требует JS) | 1 086 | 1 086 анализов (для Москвы) | ~382 МБ | `none` (SmartLab — единый прайс МСК) | Medium-High |
+| cmd-online.ru | **T1+Schema.org** | `/analizy-i-tseny/katalog-analizov/{city}/{slug}_{code}/` | **1 510** | **1 510** анализов (для msk) | **~123 МБ** | **`url_path_segment`** (`msk` / `odintsovo` / ...) | **Highest** |
 
-**Итого со scope:** ~2 785 страниц, ~9 875 позиций, ~1 ГБ трафика за полный сбор.
+**Итого со scope (с CMD):** ~4 295 страниц, ~11 385 позиций, ~1.1 ГБ трафика за полный сбор.
 Без scope было бы: ~80 000+ позиций, многократно больше трафика.
 
 **Важное замечание по Helix:** из РФ-сервера SSR определяет город по IP — мы
 видим СПб. Для сбора **Москвы** потребуется российский прокси-сервер с
 московским IP. Это оформлено в open-questions (см. раздел 14.7).
+
+**Важное замечание по CMD (уникальное преимущество):** цены **одинаковы по всем
+городам** (проверено на 3 выборках: MSK = ODIN = 530₽, 1100₽, 1130₽, 810₽).
+Поэтому для нашего scope достаточно собирать **только `msk` URL'ы** (1 510
+страниц) — это покроет всю РФ ценовую политику CMD. Сравните: для МО это дало бы
+78 511 URL (51 город × 1 510 анализов), но цены те же.
 
 ## Приложение B. Селекторы / паттерны (выжимка)
 
@@ -1123,6 +1130,179 @@ strategies:
 2. Labmarket (SmartLab) — отдельный бренд анализов. Включать ли в сравнение с
    клиниками? (Прямые конкуренты Gemotest/Helix, но не Veramed/Altamed)
 3. Срок исполнения есть только на labmarket. На /services/ — нет. ОК?
+
+---
+
+### CMD Online (T1 + Schema.org microdata) — эталонный случай
+
+**Архитектурная особенность:** Битрикс + React-фрагменты. Цены доступны через
+**Schema.org микроразметку** — самый надёжный способ извлечения из всех
+разведанных конкурентов.
+
+**Структура URL с явной городской привязкой:**
+```
+/analizy-i-tseny/katalog-analizov/{city}/{slug}_{code}/
+                                              │       │
+                                              │       └── стабильный код анализа (100002, 090037, ...)
+                                              └── slug города (msk, odintsovo, spb, ...)
+
+Примеры:
+  /analizy-i-tseny/katalog-analizov/msk/gluten/
+  /analizy-i-tseny/katalog-analizov/msk/protrombin_..._100002/
+  /analizy-i-tseny/katalog-analizov/odintsovo/gluten/
+```
+
+**Уникальное преимущество: цены одинаковы по всем городам.**
+
+Проверено на 4 выборках (Протромбин 100002, i71 Комар, Алюминий, Глютен):
+- MSK = 530₽, ODIN = 530₽ (Протромбин)
+- MSK = 1100₽, ODIN = 1100₽ (i71 Комар)
+- MSK = 1130₽, ODIN = 1130₽ (Алюминий)
+- MSK = 810₽, ODIN = 810₽ (Глютен)
+
+**Вывод для scope:** собираем только `msk` URL'ы (1 510 страниц). Это покрывает
+ценовую политику CMD по всей РФ. Не нужно собирать 78 511 URL для МО — цены те же.
+
+**Sitemap (полный и достоверный):**
+- `https://www.cmd-online.ru/sitemap.xml` → index из 17 sub-sitemaps
+- Основной: `sitemap-iblock-11.xml` + `sitemap-iblock-11.part1..6.xml` (разбит на части)
+- Всего 132 866 catalog URL (1 510 анализов × 86 городов)
+- Для scope=msk: **1 510 URL**
+
+**Discovery:** не нужен — sitemap полный. Фильтруем URL по паттерну
+`/katalog-analizov/msk/`.
+
+**robots.txt (дружелюбный):**
+- `Allow: /analizy-i-tseny/katalog-analizov/` (нет запрета)
+- Запрещены только промо-страницы (`/patsientam/akcii/...`), `/bitrix/`, `/search/`, `/kabinet/`
+- **Sitemap явно указан** в robots.txt
+
+**Schema.org микроразметка (эталонный парсинг):**
+
+На каждой странице анализа:
+```html
+<div itemprop="offer">
+  <meta itemprop="priceCurrency" content="RUB">
+  <link itemprop="availability" href="http://schema.org/InStock">
+  <span itemprop="price">530</span> р.
+</div>
+<h1 itemprop="name">Протромбин, МНО (...) в Москве</h1>
+<div itemprop="description">...</div>
+```
+
+**Regex (тривиальный и сверхнадёжный):**
+```regex
+price:     <span[^>]*itemprop="price"[^>]*>([^<]+)</span>
+currency:  <meta[^>]*itemprop="priceCurrency"[^>]*content="([^"]+)"
+available: <link[^>]*itemprop="availability"[^>]*href="([^"]+)"
+name:      <h1[^>]*>([^<]+)</h1>
+```
+
+Преимущества Schema.org подхода:
+1. **Стабильность:** микроразметка меняется реже, чем CSS-классы
+2. **Семантика:** явно указана валюта, доступность, название
+3. **Универсальность:** один regex работает для всех страниц без правок
+4. **Поддержка поисковиков:** Google/Yandex индексируют эту разметку, сайт её поддерживает
+
+**Дополнительные данные (без JS, через curl):**
+- `<h1>` — название анализа с указанием города
+- `<title>` — SEO-заголовок
+- В каталоге (на индексе): `data-code="100002"`, "Код: 100002", "Срок: 1 к.д."
+
+**Уникальный ключ:** `code` из URL (`_NNNNNN/` суффикс) или `data-code` атрибут.
+619 URL имеют код в URL, 891 — без (комплексы). Для последних ключ = `slug`.
+
+Для unified модели:
+- `externalId`: `code` если есть (619), иначе `slug` (891)
+- `code`: то же, что `externalId`
+- `slug`: slug из URL (всегда есть)
+
+**Нагрузка (для scope=msk):**
+- Страниц: 1 510
+- Размер страницы: **~85 КБ** (curl, без JS) — самый маленький из всех!
+- Полный объём: **~123 МБ** (vs 920 МБ через page_reader с JS)
+- Sequential (1 req/2s): ~50 минут
+- Parallel (10 threads): ~5 минут
+- Запросов к z-ai page_reader: **0** — достаточно plain curl
+
+**Сравнение fetcher-ов для CMD:**
+
+| Fetcher | Размер | Цена извлечена | Время | Cost |
+|---|---|---|---|---|
+| `curl` (undici) | 85 КБ | ✅ (Schema.org в HTML) | 0.5-2с | 0 ₽ |
+| `page_reader` z-ai SDK | 920 КБ | ✅ (но oversize) | 3-5с | ~0.001₽ |
+| Playwright | ~85 КБ | ✅ | 3-8с | ~0.005₽ |
+
+**Вывод:** для CMD используем plain `curl` (undici fetch). Это самый дешёвый
+и быстрый вариант, цена извлекается из статического HTML через Schema.org.
+
+**Validation rules:**
+- `min_items: 1500` (из 1 510 URL ожидаем минимум 1 500 с ценой)
+- `pages_with_price_ratio: 0.99` (99% должны иметь Schema.org price)
+- `price_range: [50, 100000]` ₽
+- `alert_if_price_missing_on: 5%` страниц (если Schema.org пропала — редизайн)
+
+**Spec-схема (концепт):**
+```yaml
+competitor: cmd
+base_url: https://www.cmd-online.ru
+tier: T1_schema_org
+region_strategy:
+  type: url_path_segment
+  param: city_slug
+  mapping:
+    moscow: msk           # Москва = msk slug
+    mo: msk               # МО тоже msk (цены одинаковы по всем городам!)
+    spb: null             # СПб не представлен в сети CMD
+  scope_optimization: |
+    Цены одинаковы по всем городам (проверено на 4 выборках).
+    Достаточно собирать только /msk/ URL'ы — это покрывает РФ.
+discovery:
+  type: sitemap
+  sitemap_urls:
+    - https://www.cmd-online.ru/sitemap.xml
+  url_filter: '/analizy-i-tseny/katalog-analizov/msk/[^/]+/$'
+  expected_pages: 1510
+fetcher:
+  type: static_curl       # undici fetch, без JS
+  user_agent: 'Mozilla/5.0 (compatible; PriceTracker/1.0)'
+  rate_limit: 2s          # 1 req per 2 sec
+parser:
+  type: schema_org
+  selectors:
+    price: '<span[^>]*itemprop="price"[^>]*>([^<]+)</span>'
+    currency: '<meta[^>]*itemprop="priceCurrency"[^>]*content="([^"]+)"'
+    name: '<h1[^>]*>([^<]+)</h1>'
+    availability: '<link[^>]*itemprop="availability"[^>]*href="([^"]+)"'
+  fields:
+    price: { group: 1, transform: parse_int }
+    currency: { group: 1, default: 'RUB' }
+    name: { group: 1, post: strip }
+    is_available: { from: availability, transform: 'value.includes("InStock")' }
+external_id:
+  source: url_suffix      # _NNNNNN/ в конце URL
+  fallback: slug          # если кода нет — slug из URL
+validation:
+  min_items: 1500
+  pages_with_price_ratio: 0.99
+  price_range: [50, 100000]
+schedule: "0 3 * * *"     # ежедневно в 03:00
+```
+
+**Специфические риски CMD:**
+1. **Schema.org разметка может исчезнуть** при редизайне → fallback на CSS-класс
+   `analyze-item__price` (но он менее надёжный, требует правки при переименовании)
+2. **React-фрагменты** могут заменить Битрикс-компоненты — но Schema.org обычно
+   сохраняется (она для SEO)
+3. **Изменение ценовой политики** (города начнут отличаться) — нужно
+   периодически (раз в месяц) проверять 3-5 URL'ов на 2-3 городах
+
+**Открытые вопросы по CMD:**
+1. ~~Цены по городам разные?~~ → **НЕТ, проверено.** Собираем только msk.
+2. Срок исполнения (1 к.д.) — есть только на индексе каталога, не на индивидуальных
+   страницах. Нужен ли? Если да — добавить отдельный scrape индекса (1 URL, 30 топ-анализов).
+3. Специфические цены для юридических лиц (B2B)? Не найдено, вероятно только
+   розничные.
 
 ---
 

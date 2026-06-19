@@ -6,6 +6,142 @@
 
 ---
 
+## 0. Scope сбора (бизнес-ограничение — НЕ изменять без согласования)
+
+### 0.1. Принцип
+
+Система отслеживает цены **только в одном выбранном географическом регионе**:
+либо конкретный город (например, Москва), либо Московская область целиком.
+**Полная федеральная тарифная сетка конкурента не собирается.**
+
+### 0.2. Обоснование
+
+1. **Бизнес-смысл:** конкурентное ценообразование локально. Цены Gemotest в
+   Новосибирске не релевантны для клиники в Одинцово.
+2. **Этическое:** меньшая нагрузка на сайты конкурентов. Сбор 1 города вместо 17
+   снижает трафик в 17 раз.
+3. **Юридическое:** минимизация объёма собираемых данных снижает риски претензий
+   по ToS.
+4. **Cost:** VLM/Playwright нужны только в fallback; минимальный сбор = минимальный
+   бюджет на прокси и AI Skills.
+
+### 0.3. Target regions (по умолчанию)
+
+| Регион | Что входит | Заметка |
+|---|---|---|
+| **Москва** (город) | ЦАО, САО, ВАО, ЮАО, СВАО, ЮВАО, ЗАО, СЗАО, ЮЗАО, ТАиО, ЗелАО | Основной регион для большинства федеральных сетей |
+| **Московская область** | Города МО: Одинцово, Долгопрудный, Балашиха, Химки, Мытищи, Красногорск, Реутов, Домодедово, и т.д. | Для региональных клиник (Veramed, Altamed+) |
+
+**Конфигурация region** задаётся через переменную окружения `TARGET_REGION` и
+хранится в БД (`AppConfig.targetRegion`). Смена региона = миграция данных
+(старые snapshot'ы остаются, новые собираются с другим scope).
+
+### 0.4. Влияние на архитектуру
+
+#### 0.4.1. Унифицированный фильтр на уровне Fetcher
+
+Каждый Fetcher получает `region: Region` параметр. На уровне spec-схемы для
+каждого конкурента определён `region_strategy` — как применить регион к URL:
+
+```yaml
+region_strategy:
+  type: url_prefix            # или url_query, cookie, ip_default, none
+  param: city_slug            # имя параметра/префикса
+  mapping:                    #(region → значение)
+    moscow: moskva
+    spb: sankt-peterburg
+    mo: ""                    # пусто = дефолтная страница
+```
+
+| Стратегия | Пример | Где применяется |
+|---|---|---|
+| `url_prefix` | `/{city}/catalog/...` | Gemotest |
+| `url_subdomain` | `https://{city}.medsi.ru/...` | Medsi (города-поддомены) |
+| `url_query` | `/services/x/?clinic={slug}` | Medsi (клиники Москвы) — **запрещено robots.txt** |
+| `cookie` | `Cookie: cityId={id}` | Helix |
+| `ip_default` | SSR определяет по IP | Helix (нельзя изменить без прокси) |
+| `tariff_select` | Вкладка тарифа в HTML | Veramed (3 тарифа клиник МО) |
+| `none` | Регион не влияет | Altamed+ (одна локация — МО) |
+
+#### 0.4.2. Хранение region в данных
+
+```prisma
+model PriceSnapshot {
+  // ...
+  region       String   @default("moscow")  // moscow | mo | spb | ...
+  locationKey  String?  // gemotest: "moskva"; medsi: "klinika-na-leninskom"; veramed: "premium"
+  // ...
+  @@index([serviceId, region, scrapedAt])
+}
+```
+
+`locationKey` — детализация внутри региона (конкретная клиника/тариф/категория).
+Для большинства конкурентов = `null` (одна цена на регион). Для Medsi — slug
+клиники в Москве. Для Veramed — название тарифа.
+
+#### 0.4.3. Пересмотр нагрузки (ТОЛЬКО целевой регион)
+
+| Сайт | Без scope (вся РФ) | Со scope (1 регион) | Снижение |
+|---|---|---|---|
+| Veramed | 1 URL × 3 тарифа = 3 261 услуг | 1 URL × 3 тарифа МО = **3 261 услуга** (Veramed — уже только МО) | 0% (уже локальный) |
+| Gemotest | 66 URL × ~17 городов = ~56 000 услуг | 66 URL × 1 город = **~3 300 услуг** | **-94%** |
+| Helix | 90 URL × SSR по IP (только СПб из РФ-сервера) | 90 URL = **1 078 услуг** для одного города | 0% (нужен прокси для других городов) |
+| Altamed+ | 294 страницы | 294 страницы (только МО) = **~900 услуг** | 0% (уже локальный) |
+| Medsi services | 1 248 × 63 клиники = ~78 000 страниц | 1 248 × **1 город (SEO-блок)** = **~1 250 услуг** | **-98%** |
+| Medsi labmarket | 1 086 × 17 городов | 1 086 × 1 город = **1 086 анализов** | **-94%** |
+
+**Итог: с scope-фильтром полный сбор = ~10 875 позиций вместо ~80 000+.**
+Объём трафика: ~50 МБ вместо ~1 ГБ (для Medsi).
+
+#### 0.4.4. Политика для много-клиниковых сетей (Medsi)
+
+Для Medsi в пределах Москвы доступно 63 клиники, но:
+- `?clinic=` запрещён в robots.txt
+- SEO-блок даёт только min-цену по всем клиникам Москвы
+
+**Решение:** собираем min-цены из SEO-блока. Если для конкретной услуги
+критична цена по конкретной клинике → ручной lookup через UI (не в scope
+автоматического сбора).
+
+#### 0.4.5. Мультигородность на будущее
+
+Если бизнес-требования изменятся и понадобится несколько регионов:
+1. Добавить `targetRegions: []` в AppConfig (вместо одного `targetRegion`)
+2. Scheduler запускает N параллельных job'ов — по одному на регион
+3. Каждый job использует свой `region_strategy` mapping
+4. **Не удалять** старые snapshot'ы — они остаются как исторические данные
+
+Это расширение заложено в архитектуру, но **не реализуется в MVP**.
+
+### 0.5. Антипаттерны (запрещено)
+
+1. ❌ Собирать цены по всем городам «на всякий случай» — нарушение scope
+2. ❌ Использовать `?clinic=` для Medsi даже если очень хочется — нарушение robots.txt
+3. ❌ Менять `TARGET_REGION` без миграции БД (старые snapshot'ы привязаны к старому region)
+4. ❌ Хранить цены без поля `region` — невозможно сопоставить данные
+5. ❌ Смешивать в одном scrape-run два региона — данные нельзя сравнивать между собой
+
+### 0.6. Валидация scope в pipeline
+
+```typescript
+// В FetcherOptions — обязательное поле
+interface FetcherOptions {
+  region: Region;            // 'moscow' | 'mo' | 'spb' | ...
+  locationKey?: string;      // детализация внутри региона
+  // ...
+}
+
+// В Validator — проверка консистентности
+function validateSnapshot(snap: PriceSnapshot, config: AppConfig): ValidationResult {
+  if (snap.region !== config.targetRegion) {
+    return { ok: false, error: 'Region mismatch: snapshot.region != config.targetRegion' };
+  }
+  // ...
+}
+```
+
+---
+
 ## 1. Классификация целей по тиру сложности
 
 Прежде чем выбирать инструмент, цель классифицируется. От этого зависит весь
@@ -398,6 +534,22 @@ Competitor (1) ─┬─ (N) Service
 Ключевые поля:
 
 ```prisma
+// Справочник регионов (см. раздел 0.3)
+model Region {
+  id          String   @id   // "moscow" | "mo" | "spb" | ...
+  name        String         // "Москва" | "Московская область" | ...
+  isDefault   Boolean  @default(false)  // только одна строка может быть true
+  createdAt   DateTime @default(now())
+}
+
+// Конфиг приложения (одна строка, обновляется при смене scope)
+model AppConfig {
+  id            Int      @id @default(1)
+  targetRegion  String   // FK → Region.id (см. раздел 0.3)
+  region        Region   @relation(fields: [targetRegion], references: [id])
+  updatedAt     DateTime @updatedAt
+}
+
 model PriceSnapshot {
   id            Int      @id @default(autoincrement())
   serviceId     Int
@@ -406,16 +558,31 @@ model PriceSnapshot {
   pricePrevious Decimal? @db.Decimal(10, 2)
   deltaPct      Decimal? @db.Decimal(6, 2)
   currency      String   @default("RUB")
-  city          String?
-  tariff        String?
+  // === scope-поля (см. раздел 0.4.2) ===
+  region        String   @default("moscow")  // FK → Region.id
+  locationKey   String?  // детализация внутри региона (клиника/тариф/категория)
+  isMinPrice    Boolean  @default(false)     // true если цена "от X" (Medsi, Altamed+ stom)
+  // ===
   scrapedAt     DateTime @default(now())
   scrapeRunId   Int
   rawHtmlS3Key  String?  // ссылка на raw lake
 
-  @@index([serviceId, scrapedAt])
+  @@index([serviceId, region, scrapedAt])
+  @@index([region, scrapedAt])
   @@index([scrapedAt])
+  // Уникальность: одна цена на (service, region, locationKey) в рамках scrape-run
+  @@unique([serviceId, region, locationKey, scrapeRunId])
 }
 ```
+
+**Контракт scope на уровне БД:**
+- `region` — обязательное поле, NOT NULL. Default берётся из `AppConfig.targetRegion`.
+- `locationKey` — nullable, для детализации внутри региона.
+- `isMinPrice` — флаг для цен формата «от X» (Medsi SEO-блок, Altamed+ stom «от 6500 ₽»).
+- Уникальный индекс `[serviceId, region, locationKey, scrapeRunId]` — не даёт
+  создать дубль в одном сборе.
+- Составной индекс `[serviceId, region, scrapedAt]` — для time-series запросов
+  по конкретной услуге в конкретном регионе.
 
 `price` в `Decimal` — не `Float`. Деньги в float — грех.
 
@@ -548,57 +715,76 @@ on push:
 
 ---
 
-## 11. Cost model (ориентировочно)
+## 11. Cost model (ориентировочно, с учётом scope — 1 регион)
 
-| Компонент | При 10 конкурентах, ежедневный сбор | Стоимость/мес |
+При scope = 1 регион (см. раздел 0) объём данных минимален, поэтому cost model
+существенно проще. Нагрузка на трафик: ~50 МБ за полный сбор вместо ~1 ГБ.
+
+| Компонент | 5 конкурентов, ежедневный сбор, 1 регион | Стоимость/мес |
 |---|---|---|
-| VPS 4CPU/8GB (scraper + worker) | 1 шт | ~3000₽ |
-| PostgreSQL managed | small | ~1500₽ |
-| Redis managed | small | ~1000₽ |
-| MinIO self-hosted (500GB) | включено в VPS | 0 |
-| Residential proxy (50GB) | на T6-T7, опционально | ~7500₽ |
-| 2Captcha (1000 solves) | опционально | ~150₽ |
-| VLM z-ai (1000 запросов) | на T8 fallback | по тарифу SDK |
+| VPS 2CPU/4GB в РФ (Москва) (scraper + worker) | 1 шт | ~2000₽ |
+| PostgreSQL self-hosted на VPS (small) | включено | 0 |
+| Redis self-hosted на VPS | включено | 0 |
+| MinIO self-hosted (50GB достаточно) | включено | 0 |
+| **Helix-Москва: residential proxy** (5-10 ГБ/мес) | обязательно для Helix | ~1500-2500₽ |
+| 2Captcha | не нужен (T1-T3 без антибота) | 0 |
+| VLM z-ai | только для fallback (редко) | ~0-300₽ |
 | Grafana Cloud free tier | метрики | 0 |
 | Sentry developer | ошибки | 0 |
-| **Итого MVP (T1-T2, без прокси)** | | **~5500₽/мес** |
-| **Итого с T6-T7 (антибот)** | | **~13000₽/мес** |
+| **Итого MVP (5 конкурентов, 1 регион)** | | **~3500-4500₽/мес** |
+
+**Сравнение с вариантом без scope:**
+- Без scope (5 конкурентов × все города РФ): ~15000-25000₽/мес (трафик + прокси + БД)
+- Со scope (1 регион): ~3500-4500₽/мес — **в 4-5 раз дешевле**
+
+При расширении до 10 конкурентов (если такие найдутся):
+- +1 VPS при росте нагрузки: +2000₽
+- +proxy на каждого конкурента с antibot: +1500₽/конкурент
+- **Прогноз на 10 конкурентов, 1 регион: ~8000-12000₽/мес**
 
 ---
 
 ## 12. Roadmap реализации
 
-### Phase 0 — Foundation (1 день)
-- Prisma schema: Competitor, Service, PriceSnapshot, ScrapeRun
-- Config loader для spec-схем (YAML)
+### Phase 0 — Foundation & Scope (1 день)
+- **Зафиксировать `TARGET_REGION`** в `.env` (см. раздел 0.3) — без этого не стартовать
+- Prisma schema: `Region`, `AppConfig`, `Competitor`, `Service`, `PriceSnapshot`
+  (с полями `region`, `locationKey`, `isMinPrice`), `ScrapeRun`
+- Config loader для spec-схем (YAML) с поддержкой `region_strategy`
 - Base Fetcher / Parser / Normalizer / Validator interfaces
+  (с обязательным `region: Region` параметром в FetcherOptions)
 - Health endpoint, structured logging (pino)
+- **Scope validation:** в Validator — проверка `snap.region === config.targetRegion`
 
 ### Phase 1 — T1 static scraper (1-2 дня)
-- Spec для Veramed (готов на 90% после разведки)
-- Spec для Gemotest (готов на 80%)
+- Spec для Veramed (готов на 90% после разведки; `region_strategy: tariff_select`)
+- Spec для Gemotest (готов на 80%; `region_strategy: url_prefix`, mapping `mo→moskva`)
 - Static HTML fetcher (undici + retry + proxy опц.)
 - Cheerio parser с multi-selector fallback
-- Diff logic для price snapshots
-- First scrape → 3261 + 3300 + 1078 услуг в БД
+- Diff logic для price snapshots (учёт `region` + `locationKey`)
+- First scrape → 3 261 + 3 300 услуг для целевого региона в БД
 
 ### Phase 2 — T2 JSON-extract (1 день)
-- Spec для Helix
+- Spec для Helix (`region_strategy: ip_default`)
 - JSON-extract стратегия (regex `"G.json./api/...": {"body": {...}}`)
 - Zod-валидация JSON-ответа
 - Pagination handler (90 страниц)
+- **Helix-Москва:** либо московский прокси (если бюджет есть), либо пометить как
+  `region: spb` явно с комментарием в AppConfig
 
 ### Phase 3 — Dashboard (1-2 дня)
-- Список конкурентов с KPI
-- Графики динамики цен (Recharts/ECharts)
-- Таблица услуг с фильтрами
+- Список конкурентов с KPI (с фильтром по `region`)
+- Графики динамики цен (Recharts/ECharts) — с разбивкой по `locationKey`
+- Таблица услуг с фильтрами (region, locationKey, isMinPrice)
 - Детали scrape-run (лог, raw html ссылка)
+- **Индикатор scope** в шапке: «Текущий регион: Московская область»
+  (напоминает пользователю о scope-ограничении)
 
 ### Phase 4 — Scheduler & alerts (1 день)
 - BullMQ worker
-- Cron-spec в YAML
-- Telegram-бот для алертов
-- Diff-notifier: «цена на X изменилась на Y%»
+- Cron-spec в YAML (с учётом scope — разные конкуренты могут собираться с разной частотой)
+- Telegram-бот для алертов (в сообщении явно указывается `region`)
+- Diff-notifier: «цена на X (регион: MO) изменилась на Y%»
 
 ### Phase 5 — VLM fallback (1 день)
 - T8 стратегия
@@ -642,26 +828,49 @@ on push:
 
 ## 14. Open questions (для уточнения с заказчиком)
 
+### Решённые (после обсуждения scope — см. раздел 0)
+
+- ✅ **Мультигородность:** НЕ нужна. Сбор только в одном целевом регионе (Москва
+  или МО). См. раздел 0.1.
+- ✅ **Хостинг:** VPS в РФ обязателен — иначе Helix/Medsi получают нерелевантный
+  регион по IP. Москва-сервер → Москва-цены для Helix/Medsi.
+- ✅ **Полная тарифная сетка Medsi (63 клиники Москвы):** НЕ собирается. Только
+  min-цены из SEO-блока (соответствует robots.txt). См. раздел 0.4.4.
+
+### Открытые
+
 1. Сколько всего конкурентов планируется? (от этого зависит: 1 worker или кластер)
-2. Нужна ли мультигородность для Helix? (потребуются прокси)
+2. **Целевой регион = `moscow` или `mo`?** Это нужно зафиксировать на старте
+   (`TARGET_REGION`). Смешивать в MVP нельзя. Рекомендация: начать с `mo`, т.к.
+   Veramed и Altamed+ уже локализованы в МО, а Gemotest/Helix/Medsi одинаково
+   хорошо работают с любым городом.
 3. Нужны ли исторические графики за >1 года? (TimescaleDB)
 4. Экспорт в Excel/Google Sheets — one-shot или по расписанию?
 5. Авторизация в системе — один пользователь или команда с ролями?
 6. Сопоставление с собственным прайсом — нужен справочник услуг?
-7. Где хостить — VPS в РФ (тогда Helix-MSK работает) или за рубежом?
-8. Бюджет на residential proxy — нужен ли вообще?
+7. **Helix-Москва:** требуется московский IP-прокси (~3000₽/мес за residential).
+   Альтернатива: собирать СПб-цены и пометить как «по умолчанию». Решить.
+8. Бюджет на residential proxy — нужен ли вообще? (только для Helix-MSK)
 
 ---
 
-## Приложение A. Карта разведанных сайтов
+## Приложение A. Карта разведанных сайтов (с учётом scope — см. раздел 0)
 
-| Сайт | Тир | URL прайса | Страниц | Кол-во услуг | Spec-готовность |
-|---|---|---|---|---|---|
-| veramed-clinic.ru | T1 | `/price/` | 1 | 3 261 (3 тарифа) | High — вёрстка стабильная, классы явные |
-| gemotest.ru | T1 | `/moskva/catalog/...` | 66 | ~3 300 | High — data-eec-* атрибуты, slug с "ё" осторожно |
-| helix.ru | T2 | `/catalog/190-vse-analizy?page=N` | 90 | 1 078 | High — embedded JSON `G.json./api/...`, total=1078 |
-| altamedplus.ru | T1+discovery | `/services/**` (distributed) | ~294 | ~900 (после дедупа) | Medium — 2 формата таблиц, нет единого прайса, discovery crawler нужен |
-| medsi.ru | **Hybrid T1+T3** | services SEO + labmarket SPA | ~3 011 | ~1 250 services + 1 086 lab tests | Medium-High — sitemap полный, но цены по клиникам запрещены в robots.txt |
+| Сайт | Тир | URL прайса (для целевого региона) | Страниц | Услуг | Объём | region_strategy | Spec-готовность |
+|---|---|---|---|---|---|---|---|
+| veramed-clinic.ru | T1 | `/price/` | 1 | 3 261 (3 тарифа, все в МО) | 3.4 МБ | `tariff_select` (премиум/одинцово/звенигород) | High |
+| gemotest.ru | T1 | `/moskva/catalog/...` (или `/{city}/catalog/...`) | 66 | ~3 300 (для одного города) | 26 МБ | `url_prefix` (moskva / spb / ...) | High |
+| helix.ru | T2 | `/catalog/190-vse-analizy?page=N` | 90 | 1 078 (для города по IP) | 22 МБ | `ip_default` (требует прокси для смены) | High |
+| altamedplus.ru | T1+discovery | `/services/**` (только МО — вся сеть локальная) | ~294 | ~900 (после дедупа) | 82 МБ | `none` (одна локация) | Medium |
+| medsi.ru services | T1 | `/services/{slug}/` (SEO-блок, только min-цены Москвы) | 1 248 | ~1 250 (только min-цены по Москве) | ~488 МБ | `none` (SEO-блок уже агрегирует по Москве) | Medium-High |
+| medsi.ru labmarket | T3 | `/labmarket/service/{slug}/` (требует JS) | 1 086 | 1 086 анализов (для Москвы) | ~382 МБ | `none` (SmartLab — единый прайс МСК) | Medium-High |
+
+**Итого со scope:** ~2 785 страниц, ~9 875 позиций, ~1 ГБ трафика за полный сбор.
+Без scope было бы: ~80 000+ позиций, многократно больше трафика.
+
+**Важное замечание по Helix:** из РФ-сервера SSR определяет город по IP — мы
+видим СПб. Для сбора **Москвы** потребуется российский прокси-сервер с
+московским IP. Это оформлено в open-questions (см. раздел 14.7).
 
 ## Приложение B. Селекторы / паттерны (выжимка)
 
@@ -906,11 +1115,16 @@ strategies:
     note: 'Цены "от" — минимальные по клиникам сети'
 ```
 
-**Открытые вопросы по Medsi:**
-1. Достаточно ли минимальных цен ("от X руб.") для бизнес-задачи? Или нужны конкретные по клиникам? (если да — нужно юридически согласовывать с Medsi или использовать прокси-серверы в разных регионах для SSR-геолокации)
-2. Labmarket — это анализы SmartLab, отдельный бренд. Включать ли в сравнение с клиниками? (Они конкурируют с Gemotest/Helix напрямую, но не с Veramed/Altamed)
+**Открытые вопросы по Medsi (после фиксации scope — см. раздел 0):**
+
+1. ~~Достаточно ли минимальных цен?~~ → **РЕШЕНО:** да, в рамках scope (1 регион).
+   Сбор конкретных цен по 63 клиникам Москвы запрещён robots.txt. Если
+   потребуется — это юридический вопрос, не технический.
+2. Labmarket (SmartLab) — отдельный бренд анализов. Включать ли в сравнение с
+   клиниками? (Прямые конкуренты Gemotest/Helix, но не Veramed/Altamed)
 3. Срок исполнения есть только на labmarket. На /services/ — нет. ОК?
 
 ---
 
-*Документ обновляется по мере разбора новых конкурентов и реализации фаз.*
+*Документ обновляется по мере разбора новых конкурентов и реализации фаз.
+Scope сбора зафиксирован в разделе 0 — изменение требует миграции БД.*

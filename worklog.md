@@ -216,3 +216,27 @@ Phase 0 полностью завершён и проверен end-to-end. Фу
 - VLM fallback
 
 ---
+
+Task ID: phase-0-download-endpoints
+Agent: lead-architect
+Task: Создать endpoints для скачивания проекта и документации
+
+Work Log:
+- Создан GET /api/download/project — tar.gz архив всего исходного кода (205 КБ, 125 файлов)
+  Исключает: node_modules, .next, .git, data/, db/*.db
+  Включает: src/, docs/, prisma/, public/, examples/, конфиги, README
+- Создан GET /api/download/docs — tar.gz только документация (31 КБ)
+  Включает: docs/scraping-methodology.md, worklog.md, README.md
+- Создан README.md с описанием проекта, архитектурой, quick start, roadmap
+- Создан .env.example со всеми переменными окружения
+- Тест: оба endpoint'а возвращают HTTP 200, архивы валидные
+- Lint: 0 ошибок
+
+## Stage Summary
+
+Пользователь может скачать проект 3 способами:
+1. Git push на GitHub (рекомендуемый — с историей коммитов)
+2. /api/download/project — tar.gz через Preview Panel (самодостаточный)
+3. /api/download/docs — только документация (31 КБ)
+
+---

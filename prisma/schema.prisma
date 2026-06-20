@@ -1,8 +1,12 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+// Prisma schema for Universal Medical Price Scraper
+// Документация архитектуры: docs/scraping-methodology.md
+//
+// 8 моделей покрывают полный цикл:
+//   Region → AppConfig (scope)
+//   Competitor → ProbeResult (история probe)
+//   Competitor → ScrapeSpec (версии spec.yaml, auto-generated)
+//   Competitor → Service → PriceSnapshot (time-series)
+//   Competitor → ScrapeRun → ScrapeAlert (лог запусков)
 
 generator client {
   provider = "prisma-client-js"
@@ -13,20 +17,293 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  name      String?
+// ============================================================================
+// SCOPE: Регионы и конфигурация приложения (см. методологию раздел 0)
+// ============================================================================
+
+model Region {
+  id        String   @id // 'moscow' | 'mo' | 'spb' | ...
+  name      String // 'Москва' | 'Московская область' | ...
+  isDefault Boolean  @default(false) // только одна строка может быть true
+
+  appConfigs AppConfig[]
+  snapshots  PriceSnapshot[]
+
   createdAt DateTime @default(now())
+}
+
+model AppConfig {
+  id           Int      @id @default(1) // всегда 1 — singleton
+  targetRegion String   // FK → Region.id
+  region       Region   @relation(fields: [targetRegion], references: [id])
+  // Доп. настройки
+  defaultRateLimitMs  Int     @default(2000) // 1 req / 2 sec
+  defaultConcurrency  Int     @default(5)
+  vlmDailyQuota       Int     @default(100) // max VLM запросов в день
+  llmDailyQuota       Int     @default(1000)
+  webReaderDailyQuota Int     @default(500)
+
   updatedAt DateTime @updatedAt
 }
 
-model Post {
+// ============================================================================
+// COMPETITOR: сайт-источник цен
+// ============================================================================
+
+model Competitor {
   id        String   @id @default(cuid())
-  title     String
-  content   String?
-  published Boolean  @default(false)
-  authorId  String
+  name      String // 'CMD Online'
+  baseUrl   String // 'https://www.cmd-online.ru'
+  // Текущий статус: 'new' → 'probing' → 'active' | 'needs_review' | 'blocked' | 'deprecated'
+  status    String   @default("new")
+  // Текущий tier (auto-detected): 'T1' | 'T1_schema_org' | 'T2' | 'T3' | 'T4' | 'T5' | 'T6' | 'T7' | 'T8' | 'T9'
+  tier      String?
+  // Текущая region_strategy (auto-detected)
+  regionStrategy String? // 'url_prefix' | 'url_path_segment' | 'url_subdomain' | 'cookie' | 'ip_default' | 'tariff_select' | 'none'
+  // Метаданные последнего probe
+  lastProbeAt    DateTime?
+  lastScrapeAt   DateTime?
+  itemsCount     Int       @default(0) // кол-во услуг после последнего successful scrape
+  confidenceScore Int?     @default(0) // 0-100, из ProbeResult
+
+  // Связи
+  services     Service[]
+  scrapeRuns   ScrapeRun[]
+  scrapeSpecs  ScrapeSpec[]
+  probeResults ProbeResult[]
+  alerts       ScrapeAlert[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([status])
+}
+
+// ============================================================================
+// PROBE: История probe-запусков (раздел 2 методологии)
+// ============================================================================
+
+model ProbeResult {
+  id           String   @id @default(cuid())
+  competitorId String
+  competitor   Competitor @relation(fields: [competitorId], references: [id], onDelete: Cascade)
+
+  probedAt     DateTime @default(now())
+
+  // Результаты probe
+  framework      String?  // 'bitrix' | 'next' | 'nuxt' | 'angular' | 'vue' | 'react-spa' | 'tilda' | 'wordpress' | 'custom' | 'unknown'
+  isSSR          Boolean?
+  hasEmbeddedState Boolean? // __NEXT_DATA__, G.json./api/
+  hasSchemaOrg   Boolean?
+  currencyFormat String?  // '₽' | 'руб.' | 'р.' | 'rub' | 'mixed'
+  tier           String?  // T1-T10
+  regionStrategy String?
+  sitemapUrlsCount Int    @default(0)
+  priceUrlsCount   Int    @default(0)
+  confidenceScore Int     @default(0) // 0-100
+
+  // Полный отчёт probe в JSON
+  probeReportJson String // JSON.stringify(ProbeResult full)
+
+  // Связь: spec, сгенерированный из этого probe (one-to-one, owner = ScrapeSpec)
+  generatedSpec ScrapeSpec? @relation("SpecFromProbe")
+
+  @@index([competitorId, probedAt])
+}
+
+// ============================================================================
+// SPEC: Версии spec.yaml (auto-generated или manual)
+// ============================================================================
+
+model ScrapeSpec {
+  id           String   @id @default(cuid())
+  competitorId String
+  competitor   Competitor @relation(fields: [competitorId], references: [id], onDelete: Cascade)
+
+  version      Int      // increment on each change
+  specYaml     String   // полный spec.yaml
+  autoGenerated Boolean @default(false)
+  confidence   Int      @default(0) // 0-100
+  status       String   @default("active") // 'active' | 'needs_review' | 'deprecated' | 'rejected'
+
+  // Связь с probe (если spec auto-generated из probe)
+  probeResultId String? @unique
+  probeResult   ProbeResult? @relation("SpecFromProbe", fields: [probeResultId], references: [id])
+
+  createdAt DateTime @default(now())
+  createdBy String?  // user email или 'auto-detector'
+
+  // Обратные связи
+  scrapeRuns ScrapeRun[]
+
+  @@index([competitorId, status])
+  @@index([status])
+}
+
+// ============================================================================
+// SERVICE: Услуга/анализ (нормализованная)
+// ============================================================================
+
+model Service {
+  id           String   @id @default(cuid())
+  competitorId String
+  competitor   Competitor @relation(fields: [competitorId], references: [id], onDelete: Cascade)
+
+  // Идентификация
+  externalId     String  // stable ID: cat-NNNN, hxid, code, slug
+  externalIdType String  // 'cat_id' | 'hxid' | 'code' | 'slug' | 'name_hash'
+  code           String? // человеко-читаемый код (3.9.1., 02-005, 100002)
+  slug           String? // URL slug
+
+  // Содержание
+  name        String  // canonical (после normalize)
+  nameRaw     String  // как на сайте
+  category    String?
+  section     String?
+  description String?
+  biomaterial String?
+  estimatedDays String? // срок исполнения
+  method      String?
+
+  // URL
+  url String // canonical URL
+
+  // Связи
+  snapshots PriceSnapshot[]
+
+  // Metadata
+  firstSeenAt DateTime @default(now())
+  lastSeenAt  DateTime @default(now())
+  isActive    Boolean  @default(true) // false если услуга исчезла из последнего scrape
+
+  @@unique([competitorId, externalId])
+  @@index([competitorId, category])
+  @@index([competitorId, isActive])
+  @@index([name])
+}
+
+// ============================================================================
+// PRICE SNAPSHOT: time-series цен (раздел 14 методологии)
+// ============================================================================
+
+model PriceSnapshot {
+  id        String   @id @default(cuid())
+  serviceId String
+  service   Service  @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  // Цена в копейках (Int, т.к. SQLite не поддерживает Decimal)
+  // Для отображения: rubles = price / 100
+  price         Int      // в копейках
+  pricePrevious Int?     // в копейках
+  deltaPct      Int?     // % изменения × 100 (для точности: 5.25% = 525)
+  currency      String   @default("RUB")
+
+  // Scope (раздел 0.4.2)
+  region      String  // FK → Region.id (текстом, т.к. SQLite)
+  locationKey String? // детализация: клиника/тариф/категория
+  tariff      String? // для Veramed
+
+  // Флаги
+  isMinPrice  Boolean @default(false) // true если "от X" (Medsi, Altamed+ stom)
+  marketPrice Int?    // старая цена в копейках (для скидок)
+
+  // Audit
+  scrapedAt      DateTime @default(now())
+  scrapeRunId    String
+  scrapeRun      ScrapeRun @relation(fields: [scrapeRunId], references: [id], onDelete: Cascade)
+  rawHtmlS3Key   String? // ссылка на raw-lake (MinIO)
+
+  // Parse metadata
+  parseStrategy  String  // 'schema_org' | 'data_attrs' | 'embedded_json' | 'css_class' | 'seo_block' | 'vlm'
+  parseConfidence Int    @default(100) // 0-100
+
+  regionRef Region? @relation(fields: [region], references: [id])
+
+  @@index([serviceId, region, scrapedAt])
+  @@index([region, scrapedAt])
+  @@index([scrapedAt])
+  @@index([scrapeRunId])
+  // Уникальность: одна цена на (service, region, locationKey) в рамках scrape-run
+  @@unique([serviceId, region, locationKey, scrapeRunId])
+}
+
+// ============================================================================
+// SCRAPE RUN: лог запусков сбора
+// ============================================================================
+
+model ScrapeRun {
+  id           String   @id @default(cuid())
+  competitorId String
+  competitor   Competitor @relation(fields: [competitorId], references: [id], onDelete: Cascade)
+
+  startedAt   DateTime @default(now())
+  finishedAt  DateTime?
+  durationMs  Int?
+
+  // Статус: 'running' | 'success' | 'failed' | 'partial' | 'cancelled'
+  status      String   @default("running")
+
+  // Метрики
+  urlsPlanned    Int     @default(0)
+  urlsFetched    Int     @default(0)
+  urlsSucceeded  Int     @default(0)
+  urlsFailed     Int     @default(0)
+  itemsExtracted Int     @default(0)
+  itemsChanged   Int     @default(0) // цены изменились
+  itemsAdded     Int     @default(0)
+  itemsRemoved   Int     @default(0)
+
+  // Health (раздел 5.1)
+  nullFieldsRate Float  @default(0) // % полей = null
+  structureDiff  Float  @default(0) // % diff с прошлым успешным сбором
+  contentHash    String? // sha256(rawHtml) для idempotency
+
+  // Spec, по которому выполнялся scrape
+  specId    String?
+  spec      ScrapeSpec? @relation(fields: [specId], references: [id])
+
+  // Error (если failed)
+  errorMessage String?
+  errorStack   String?
+
+  // Region scope этого запуска
+  region String
+
+  snapshots PriceSnapshot[]
+  alerts    ScrapeAlert[]
+
+  @@index([competitorId, startedAt])
+  @@index([status])
+  @@index([region, startedAt])
+}
+
+// ============================================================================
+// ALERT: уведомления о проблемах и изменениях
+// ============================================================================
+
+model ScrapeAlert {
+  id           String   @id @default(cuid())
+  competitorId String
+  competitor   Competitor @relation(fields: [competitorId], references: [id], onDelete: Cascade)
+  scrapeRunId  String?
+  scrapeRun    ScrapeRun?  @relation(fields: [scrapeRunId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  // Severity: 'info' | 'warning' | 'critical'
+  severity String
+  // Type: 'scrape_failed' | 'items_drop' | 'block_403' | 'block_429' | 'price_change' | 'spec_deprecated' | 'self_heal_triggered' | 'vlm_quota_exceeded'
+  type    String
+  message String
+  // Контекст в JSON
+  contextJson String?
+
+  // Acknowledged: user подтвердил alert
+  acknowledged Boolean @default(false)
+  acknowledgedAt DateTime?
+  acknowledgedBy String?
+
+  @@index([competitorId, createdAt])
+  @@index([severity, acknowledged])
+  @@index([scrapeRunId])
 }

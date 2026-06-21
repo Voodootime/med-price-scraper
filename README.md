@@ -12,6 +12,8 @@
   (Veramed, Gemotest, Helix, Altamed+, Medsi, CMD).
 - **[docs/product-roadmap.md](docs/product-roadmap.md)** — актуальный продуктовый roadmap
   с приоритетами P0-P6 и ближайшими Definition of Done.
+- **[docs/development-roadmap-detailed.md](docs/development-roadmap-detailed.md)** — детальный
+  план этапов разработки, критерии готовности, риски и ближайшие инженерные задачи.
 - **[worklog.md](worklog.md)** — журнал разработки мультиагентной команды.
 
 ## 🚀 Быстрый старт

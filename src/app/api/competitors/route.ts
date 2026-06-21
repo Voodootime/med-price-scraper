@@ -9,6 +9,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { logger } from '@/lib/logger'
 import { loadConfig } from '@/lib/config'
+import { assertPublicHttpUrl, UnsafeUrlError } from '@/lib/security/url-policy'
 
 export const dynamic = 'force-dynamic'
 
@@ -54,16 +55,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'name and baseUrl are required' }, { status: 400 })
     }
 
-    // Валидация URL
+    let normalizedBaseUrl: string
     try {
-      new URL(baseUrl)
-    } catch {
-      return NextResponse.json({ error: 'Invalid baseUrl' }, { status: 400 })
+      normalizedBaseUrl = (await assertPublicHttpUrl(baseUrl)).origin
+    } catch (e) {
+      const message = e instanceof UnsafeUrlError ? e.message : 'Invalid baseUrl'
+      return NextResponse.json({ error: message }, { status: 400 })
     }
 
     // Проверка дубликата
     const existing = await db.competitor.findFirst({
-      where: { baseUrl },
+      where: { OR: [{ baseUrl: normalizedBaseUrl }, { baseUrl: `${normalizedBaseUrl}/` }] },
     })
     if (existing) {
       return NextResponse.json({ error: 'Competitor with this URL already exists', id: existing.id }, { status: 409 })
@@ -73,12 +75,12 @@ export async function POST(req: NextRequest) {
     const competitor = await db.competitor.create({
       data: {
         name,
-        baseUrl,
+        baseUrl: normalizedBaseUrl,
         status: 'new',
       },
     })
 
-    logger.info({ competitorId: competitor.id, name, baseUrl }, 'Competitor created')
+    logger.info({ competitorId: competitor.id, name, baseUrl: normalizedBaseUrl }, 'Competitor created')
 
     // Probe Engine запускается отдельно через POST /api/probe с { competitorId }.
     // См. src/app/api/probe/route.ts и src/scraper/strategies/probe-engine.ts.

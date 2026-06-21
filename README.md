@@ -10,6 +10,8 @@
   (1847 строк): классификация тиров, Probe Engine, Discovery Engine, Schema inference,
   Adaptive parser, Universal data model, AI Skills, Roadmap, эталонные кейсы
   (Veramed, Gemotest, Helix, Altamed+, Medsi, CMD).
+- **[docs/product-roadmap.md](docs/product-roadmap.md)** — актуальный продуктовый roadmap
+  с приоритетами P0-P6 и ближайшими Definition of Done.
 - **[worklog.md](worklog.md)** — журнал разработки мультиагентной команды.
 
 ## 🚀 Быстрый старт
@@ -31,7 +33,7 @@ bun run dev
 # → http://localhost:3000
 ```
 
-Полный список env-переменных (18 шт.) и их значения по умолчанию —
+Полный список env-переменных и их значения по умолчанию —
 в [`src/lib/config/index.ts`](src/lib/config/index.ts) (zod-схема) и в [`.env.example`](.env.example).
 
 ## 🏗️ Архитектура
@@ -89,7 +91,7 @@ TARGET_REGION=mo              # moscow | mo | spb
 LOG_LEVEL=info
 ```
 
-Полный список (18 переменных): см. [`.env.example`](.env.example).
+Полный список переменных: см. [`.env.example`](.env.example).
 Валидация — через zod-схему в [`src/lib/config/index.ts`](src/lib/config/index.ts) (fail-fast при ошибке).
 
 | Категория | Переменные |
@@ -100,6 +102,7 @@ LOG_LEVEL=info
 | Rate limits | `DEFAULT_RATE_LIMIT_MS`, `DEFAULT_CONCURRENCY`, `MAX_RETRIES` |
 | AI quotas | `VLM_DAILY_QUOTA`, `LLM_DAILY_QUOTA`, `WEB_READER_DAILY_QUOTA`, `WEB_SEARCH_DAILY_QUOTA` |
 | z-ai SDK | `ZAI_API_KEY` |
+| API protection | `ADMIN_API_KEY` |
 | Storage | `RAW_LAKE_PATH`, `SCREENSHOTS_PATH` |
 | Proxy | `PROXY_URL`, `PROXY_USER`, `PROXY_PASS` |
 | Telegram | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` |

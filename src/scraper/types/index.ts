@@ -261,6 +261,7 @@ export interface FetchResult {
   retries: number
   proxyUsed?: string
   fromCache: boolean
+  rawLakeKey?: string
 }
 
 // ============================================================================

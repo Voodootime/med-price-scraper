@@ -118,7 +118,7 @@ export class DefaultProbeEngine implements ProbeEngine {
     // === Step 4: sample URLs + price strategy test ===
     log.info('Step 4: Testing price strategies on sample URLs')
     const sampleUrls = pickSampleUrls(allUrlStrings, ctx.sampleSize, ctx.baseUrl)
-    const sampleHtmls: string[] = []
+    const samplePairs: Array<{ url: string; html: string }> = []
 
     for (const url of sampleUrls) {
       try {
@@ -131,19 +131,20 @@ export class DefaultProbeEngine implements ProbeEngine {
           rateLimitMs: 1000,
         })
         if (result.status === 200) {
-          sampleHtmls.push(result.body)
+          samplePairs.push({ url, html: result.body })
         }
       } catch (e) {
         log.warn({ url, err: (e as Error).message }, 'Sample URL fetch failed')
       }
     }
 
-    // Также тестируем на homepage
-    sampleHtmls.push(homepageHtml)
+    if (!samplePairs.some((sample) => sample.url === ctx.baseUrl)) {
+      samplePairs.push({ url: ctx.baseUrl, html: homepageHtml })
+    }
 
     const priceStrategyResults = await testPriceStrategies({
-      sampleUrls,
-      sampleHtmls,
+      sampleUrls: samplePairs.map((sample) => sample.url),
+      sampleHtmls: samplePairs.map((sample) => sample.html),
     })
 
     const successfulStrategies = priceStrategyResults.filter((s) => s.success)
@@ -210,7 +211,7 @@ export class DefaultProbeEngine implements ProbeEngine {
       antiBotHints: frameworkResult.antiBotHints,
       confidenceScore,
       homepageSize: homepageHtml.length,
-      sampleUrls,
+      sampleUrls: samplePairs.map((sample) => sample.url),
     }
 
     log.info(

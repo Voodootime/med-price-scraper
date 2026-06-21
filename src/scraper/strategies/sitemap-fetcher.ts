@@ -16,6 +16,7 @@
 
 import { DOMParser } from 'linkedom'
 import { logger } from '@/lib/logger'
+import { fetchPublicHttpUrl } from '@/lib/security/url-policy'
 import { getStaticFetcher } from '@/scraper/strategies/static-fetcher'
 
 const log = logger.child({ module: 'sitemap-fetcher' })
@@ -63,7 +64,7 @@ async function decompressGzip(buffer: ArrayBuffer): Promise<string> {
 async function fetchContent(sitemapUrl: string, timeoutMs: number): Promise<string> {
   if (sitemapUrl.endsWith('.gz')) {
     try {
-      const resp = await fetch(sitemapUrl, {
+      const resp = await fetchPublicHttpUrl(sitemapUrl, {
         headers: { Accept: 'application/gzip, application/xml' },
         signal: AbortSignal.timeout(timeoutMs),
       })

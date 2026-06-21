@@ -13,6 +13,8 @@
  */
 
 import { logger } from '@/lib/logger'
+import { saveRawFetchSnapshot } from '@/lib/raw-lake'
+import { fetchPublicHttpUrl } from '@/lib/security/url-policy'
 import { sha256 } from '@/scraper/utils/price'
 import type { FetchResult, Tier } from '@/scraper/types'
 import type { Fetcher, FetcherOptions } from '@/scraper/interfaces'
@@ -96,11 +98,10 @@ export class StaticFetcher implements Fetcher {
         const controller = new AbortController()
         const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs)
 
-        const response = await fetch(url, {
+        const response = await fetchPublicHttpUrl(url, {
           method: 'GET',
           headers: fetchHeaders,
           signal: controller.signal,
-          redirect: 'follow',
         })
 
         clearTimeout(timeoutHandle)
@@ -114,6 +115,27 @@ export class StaticFetcher implements Fetcher {
           responseHeaders[key] = value
         })
 
+        let rawLakeKey: string | undefined
+        try {
+          const snapshot = await saveRawFetchSnapshot({
+            url,
+            finalUrl: response.url || url,
+            status: response.status,
+            headers: responseHeaders,
+            body,
+            contentHash,
+            fetchedAt: new Date(),
+            durationMs,
+            fetcher: this.name,
+            tier: options.tier,
+            retries: attempt,
+            region: options.region,
+          })
+          rawLakeKey = snapshot.key
+        } catch (e) {
+          log.warn({ err: (e as Error).message }, 'Raw-lake snapshot save failed')
+        }
+
         const result: FetchResult = {
           url: response.url || url,
           status: response.status,
@@ -126,6 +148,7 @@ export class StaticFetcher implements Fetcher {
           retries: attempt,
           proxyUsed: proxyUrl,
           fromCache: false,
+          rawLakeKey,
         }
 
         log.info(
@@ -135,6 +158,7 @@ export class StaticFetcher implements Fetcher {
             bytes: body.length,
             attempt,
             hash: contentHash.slice(0, 12),
+            rawLakeKey,
           },
           'Fetch succeeded'
         )

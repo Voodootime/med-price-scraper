@@ -3,11 +3,11 @@
 import * as React from 'react'
 import {
   Activity,
-  CheckCircle2,
   AlertTriangle,
-  XCircle,
+  CheckCircle2,
   Clock,
   Loader2,
+  XCircle,
   type LucideIcon,
 } from 'lucide-react'
 import {
@@ -18,82 +18,11 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-
-// ============================================================================
-// TYPES — заглушка до появления /api/scrape-runs в Phase 6
-// ============================================================================
+import { Skeleton } from '@/components/ui/skeleton'
+import { useDashboardSummary, type DashboardScrapeRunDTO } from './dashboard-data'
+import { formatFullDate, formatRelativeDate } from './shared'
 
 type RunStatus = 'running' | 'success' | 'failed' | 'partial' | 'cancelled'
-
-interface ScrapeRunStub {
-  id: string
-  competitorName: string
-  status: RunStatus
-  itemsExtracted: number
-  durationMs: number
-  startedAt: string // ISO
-  region: string
-}
-
-/**
- * Заглушка с фейковыми scrape-run для демонстрации timeline.
- *
- * Реальные данные придут в Phase 6 через:
- *   GET /api/scrape-runs?limit=20 → ScrapeRun[]
- *
- * Структура: соответствуют полям Prisma-модели ScrapeRun.
- */
-const STUB_RUNS: ScrapeRunStub[] = [
-  {
-    id: 'stub-1',
-    competitorName: 'CMD Online',
-    status: 'success',
-    itemsExtracted: 1510,
-    durationMs: 184_320,
-    startedAt: new Date(Date.now() - 12 * 60 * 1000).toISOString(),
-    region: 'mo',
-  },
-  {
-    id: 'stub-2',
-    competitorName: 'Gemotest',
-    status: 'partial',
-    itemsExtracted: 742,
-    durationMs: 96_540,
-    startedAt: new Date(Date.now() - 45 * 60 * 1000).toISOString(),
-    region: 'mo',
-  },
-  {
-    id: 'stub-3',
-    competitorName: 'Helix',
-    status: 'failed',
-    itemsExtracted: 0,
-    durationMs: 12_400,
-    startedAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
-    region: 'mo',
-  },
-  {
-    id: 'stub-4',
-    competitorName: 'Veramed',
-    status: 'success',
-    itemsExtracted: 318,
-    durationMs: 42_100,
-    startedAt: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(),
-    region: 'mo',
-  },
-  {
-    id: 'stub-5',
-    competitorName: 'Altamed+',
-    status: 'running',
-    itemsExtracted: 0,
-    durationMs: 0,
-    startedAt: new Date(Date.now() - 90 * 1000).toISOString(),
-    region: 'mo',
-  },
-]
-
-// ============================================================================
-// HELPERS
-// ============================================================================
 
 const STATUS_META: Record<
   RunStatus,
@@ -102,8 +31,7 @@ const STATUS_META: Record<
   running: {
     label: 'Выполняется',
     icon: Loader2,
-    className:
-      'bg-secondary text-secondary-foreground [&_svg]:animate-spin',
+    className: 'bg-secondary text-secondary-foreground [&_svg]:animate-spin',
   },
   success: {
     label: 'Успешно',
@@ -124,15 +52,18 @@ const STATUS_META: Record<
       'border-transparent bg-red-100 text-red-900 dark:bg-red-950/60 dark:text-red-200',
   },
   cancelled: {
-    label: 'Отменён',
+    label: 'Отменен',
     icon: Clock,
-    className:
-      'border-transparent bg-muted text-muted-foreground',
+    className: 'border-transparent bg-muted text-muted-foreground',
   },
 }
 
-function formatDuration(ms: number): string {
-  if (!ms || ms < 1000) return '—'
+function knownStatus(status: string): RunStatus {
+  return status in STATUS_META ? (status as RunStatus) : 'cancelled'
+}
+
+function formatDuration(ms: number | null): string {
+  if (!ms || ms < 1000) return '-'
   const sec = Math.round(ms / 1000)
   if (sec < 60) return `${sec} с`
   const min = Math.floor(sec / 60)
@@ -142,42 +73,40 @@ function formatDuration(ms: number): string {
   return `${h} ч ${min % 60} мин`
 }
 
-function formatRelative(iso: string): string {
-  const d = new Date(iso)
-  const diff = Date.now() - d.getTime()
-  const min = Math.floor(diff / 60_000)
-  if (min < 1) return 'только что'
-  if (min < 60) return `${min} мин назад`
-  const h = Math.floor(min / 60)
-  if (h < 24) return `${h} ч назад`
-  const days = Math.floor(h / 24)
-  return `${days} дн назад`
+function TimelineSkeleton() {
+  return (
+    <div className="space-y-4">
+      {Array.from({ length: 4 }).map((_, i) => (
+        <div key={i} className="flex gap-3">
+          <Skeleton className="size-6 rounded-full" />
+          <div className="flex-1 space-y-2">
+            <Skeleton className="h-4 w-40" />
+            <Skeleton className="h-4 w-56" />
+          </div>
+        </div>
+      ))}
+    </div>
+  )
 }
-
-// ============================================================================
-// TIMELINE ITEM
-// ============================================================================
 
 function TimelineItem({
   run,
   isLast,
 }: {
-  run: ScrapeRunStub
+  run: DashboardScrapeRunDTO
   isLast: boolean
 }) {
-  const meta = STATUS_META[run.status]
+  const meta = STATUS_META[knownStatus(run.status)]
   const Icon = meta.icon
 
   return (
     <li className="relative flex gap-3 pb-4 last:pb-0">
-      {/* Линия timeline */}
       {!isLast && (
         <span
           aria-hidden
           className="absolute left-[11px] top-6 h-full w-px bg-border"
         />
       )}
-      {/* Иконка-точка */}
       <span
         aria-hidden
         className={`mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full ${meta.className}`}
@@ -193,9 +122,9 @@ function TimelineItem({
           <time
             className="text-xs text-muted-foreground tabular-nums"
             dateTime={run.startedAt}
-            title={new Date(run.startedAt).toLocaleString('ru-RU')}
+            title={formatFullDate(run.startedAt)}
           >
-            {formatRelative(run.startedAt)}
+            {formatRelativeDate(run.startedAt)}
           </time>
         </div>
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
@@ -209,7 +138,28 @@ function TimelineItem({
               </span>
             </span>
           )}
-          {run.durationMs > 0 && (
+          {run.itemsAdded > 0 && (
+            <span>
+              added: <span className="tabular-nums text-foreground">
+                {run.itemsAdded.toLocaleString('ru-RU')}
+              </span>
+            </span>
+          )}
+          {run.itemsChanged > 0 && (
+            <span>
+              changed: <span className="tabular-nums text-foreground">
+                {run.itemsChanged.toLocaleString('ru-RU')}
+              </span>
+            </span>
+          )}
+          {run.urlsFailed > 0 && (
+            <span>
+              failed URLs: <span className="tabular-nums text-foreground">
+                {run.urlsFailed.toLocaleString('ru-RU')}
+              </span>
+            </span>
+          )}
+          {run.durationMs && run.durationMs > 0 && (
             <span>
               длит.: <span className="tabular-nums text-foreground">
                 {formatDuration(run.durationMs)}
@@ -217,16 +167,20 @@ function TimelineItem({
             </span>
           )}
         </div>
+        {run.errorMessage && (
+          <p className="line-clamp-2 text-xs text-destructive">
+            {run.errorMessage}
+          </p>
+        )}
       </div>
     </li>
   )
 }
 
-// ============================================================================
-// MAIN COMPONENT
-// ============================================================================
-
 export function RecentActivity() {
+  const { data, isLoading, isError } = useDashboardSummary()
+  const runs = data?.latestRuns ?? []
+
   return (
     <Card>
       <CardHeader>
@@ -235,19 +189,31 @@ export function RecentActivity() {
           Последние запуски
         </CardTitle>
         <CardDescription>
-          Timeline scrape-run. Реальные данные появятся в Phase 6.
+          Реальные scrape-run из базы данных.
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <ol className="space-y-0">
-          {STUB_RUNS.map((run, idx) => (
-            <TimelineItem
-              key={run.id}
-              run={run}
-              isLast={idx === STUB_RUNS.length - 1}
-            />
-          ))}
-        </ol>
+        {isLoading ? (
+          <TimelineSkeleton />
+        ) : isError ? (
+          <div className="rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+            Не удалось загрузить scrape-run.
+          </div>
+        ) : runs.length === 0 ? (
+          <div className="rounded-md border px-4 py-6 text-sm text-muted-foreground">
+            Scrape-run пока нет. Запустите Probe, затем Scrape now для конкурента.
+          </div>
+        ) : (
+          <ol className="space-y-0">
+            {runs.map((run, idx) => (
+              <TimelineItem
+                key={run.id}
+                run={run}
+                isLast={idx === runs.length - 1}
+              />
+            ))}
+          </ol>
+        )}
       </CardContent>
     </Card>
   )

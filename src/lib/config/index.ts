@@ -42,6 +42,9 @@ const envSchema = z.object({
   // === z-ai SDK ===
   ZAI_API_KEY: z.string().optional(),
 
+  // === API protection ===
+  ADMIN_API_KEY: z.string().optional(),
+
   // === Storage ===
   RAW_LAKE_PATH: z.string().default('./data/raw-lake'),
   SCREENSHOTS_PATH: z.string().default('./data/screenshots'),

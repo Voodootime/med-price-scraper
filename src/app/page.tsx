@@ -8,6 +8,8 @@ import { DashboardFooter } from '@/components/dashboard/dashboard-footer'
 import { StatsCards } from '@/components/dashboard/stats-cards'
 import { CompetitorsTable } from '@/components/dashboard/competitors-table'
 import { RecentActivity } from '@/components/dashboard/recent-activity'
+import { PipelineStatus } from '@/components/dashboard/pipeline-status'
+import { ServicesTable } from '@/components/dashboard/services-table'
 import { useHealth } from '@/components/dashboard/shared'
 
 /**
@@ -61,6 +63,8 @@ export default function DashboardPage() {
         {/* Stats row — 4 карточки */}
         <StatsCards />
 
+        <PipelineStatus />
+
         {/* Основная сетка: таблица конкурентов + таймлайн активности */}
         <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,28rem)]">
           <section aria-label="Конкуренты" className="min-w-0">
@@ -70,6 +74,8 @@ export default function DashboardPage() {
             <RecentActivity />
           </section>
         </div>
+
+        <ServicesTable />
       </main>
 
       <DashboardFooter />

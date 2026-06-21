@@ -18,6 +18,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { logger } from '@/lib/logger'
 import { loadConfig } from '@/lib/config'
+import { assertPublicHttpUrl, UnsafeUrlError } from '@/lib/security/url-policy'
 import { getProbeEngine } from '@/scraper/strategies/probe-engine'
 
 export const dynamic = 'force-dynamic'
@@ -52,25 +53,28 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'Competitor not found' }, { status: 404 })
       }
     } else if (url) {
-      // Валидация URL
+      let normalizedUrl: string
       try {
-        new URL(url)
-      } catch {
-        return NextResponse.json({ error: 'Invalid URL' }, { status: 400 })
+        normalizedUrl = (await assertPublicHttpUrl(url)).origin
+      } catch (e) {
+        const message = e instanceof UnsafeUrlError ? e.message : 'Invalid URL'
+        return NextResponse.json({ error: message }, { status: 400 })
       }
 
       // Найти или создать
-      competitor = await db.competitor.findFirst({ where: { baseUrl: url } })
+      competitor = await db.competitor.findFirst({
+        where: { OR: [{ baseUrl: normalizedUrl }, { baseUrl: `${normalizedUrl}/` }] },
+      })
       if (!competitor) {
-        const hostname = new URL(url).hostname.replace(/^www\./, '')
+        const hostname = new URL(normalizedUrl).hostname.replace(/^www\./, '')
         competitor = await db.competitor.create({
           data: {
             name: hostname,
-            baseUrl: url,
+            baseUrl: normalizedUrl,
             status: 'probing',
           },
         })
-        log.info({ competitorId: competitor.id, url }, 'Competitor created for probe')
+        log.info({ competitorId: competitor.id, url: normalizedUrl }, 'Competitor created for probe')
       }
     }
 

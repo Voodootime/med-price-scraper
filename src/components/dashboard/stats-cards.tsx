@@ -17,6 +17,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
+import { useDashboardSummary } from './dashboard-data'
 
 // ============================================================================
 // TYPES
@@ -81,17 +82,14 @@ export function useCompetitors() {
  * квери-функцию.
  */
 export function useStats() {
-  const { data, isLoading, isError } = useCompetitors()
+  const { data, isLoading, isError } = useDashboardSummary()
 
   const stats: DashboardStats = React.useMemo(() => {
-    const list = data?.competitors ?? []
-    const services = list.reduce((acc, c) => acc + (c.itemsCount ?? 0), 0)
-    // Подсчёт активных сегодня — оставим 0 до появления /api/stats (Phase 6)
     return {
-      competitors: data?.total ?? list.length,
-      services,
-      scrapesToday: 0,
-      alerts: 0,
+      competitors: data?.stats.competitors ?? 0,
+      services: data?.stats.services ?? 0,
+      scrapesToday: data?.stats.scrapesToday ?? 0,
+      alerts: data?.stats.activeAlerts ?? 0,
     }
   }, [data])
 

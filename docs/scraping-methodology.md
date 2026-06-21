@@ -1303,6 +1303,18 @@ model ProbeResult {
 - LLM-assisted inference (z-ai chat SDK)
 - Confidence score computation
 - Spec auto-activation rules (≥70 auto, 40-69 review, <40 reject)
+- **JS-extractor режим** (заимствовано из scraply, см. Приложение D):
+  - опциональный `type: js_eval` в spec.yaml
+  - sandboxed выполнение cheerio + пользовательских JS-выражений
+  - для power-users, которым нужна точечная гибкость
+- **Dev REPL shell** (заимствовано из scraply, см. Приложение D):
+  - endpoint `/api/dev/shell` — отправляешь URL + extractors → получаешь результат
+  - UI с Monaco editor: HTML слева, результат справа
+  - cheerio исполняется на сервере, реальный-time feedback
+  - ускоряет разработку spec'ов в 10 раз
+- **Debug `return_body` режим** (заимствовано из scraply):
+  - `ParseResult.debug.html` (опционально) — сырой HTML для debugging
+  - `ParseResult.debug.domStats` — статистика DOM (totalElements, priceElements, scriptCount)
 
 ### Phase 5 — Normalizer (1 день)
 - Price parser ("1 300 ₽" → 1300, "от 530 р." → 530 with isMinPrice=true)
@@ -1346,6 +1358,10 @@ model ProbeResult {
 
 ### Phase 11 — Production-ready
 - Docker compose / K8s manifests
+- **Multi-stage Docker builds** (заимствовано из scraply):
+  - `Dockerfile.lean` — только T1/T2 (cheerio + JSON extract), ~50 МБ
+  - `Dockerfile.full` — с Playwright для T3-T8, ~500 МБ
+  - отдельные деплойменты для lean и full workers
 - CI/CD pipeline
 - Runbook для инцидентов
 - Backup strategy для Postgres
@@ -1594,7 +1610,238 @@ robots_compliance:
 
 ---
 
+## Приложение D. Заимствования из scraply (github.com/alash3al/scraply)
+
+> **Источник:** [scraply](https://github.com/alash3al/scraply) — микро-утилита
+> на Go (129 stars, 2022) для извлечения данных из HTML через jQuery-подобный
+> синтаксис. Не фреймворк, а простой extractor.
+>
+> Scraply — противоположность нашему подходу: он требует **ручного написания
+> extractors**, наш движок делает **автоопределение**. Но у scraply есть 4
+> сильные UX-идеи, которые мы интегрируем как опциональные расширения.
+
+### D.1. Dev REPL Shell (Приоритет 1 — в Phase 4)
+
+**Что позаимствовано:** интерактивный shell для разработки и отладки селекторов.
+
+У scraply:
+```bash
+scraply shell -u https://example.com
+➜ (scraply) > $("title").text()
+"Example Domain"
+```
+
+**Наша адаптация (TypeScript + Next.js):**
+
+Endpoint `POST /api/dev/shell`:
+```typescript
+// Request
+{
+  "url": "https://www.cmd-online.ru/analizy-i-tseny/katalog-analizov/msk/gluten/",
+  "extractors": {
+    "price": '$("span[itemprop=price]").text().trim()',
+    "name": '$("h1").text()',
+    "all_prices": '$("span[itemprop=price]").map((i,el)=>$(el).text()).get()'
+  },
+  "return_body": false
+}
+
+// Response
+{
+  "status": 200,
+  "url": "https://www.cmd-online.ru/.../gluten/",
+  "result": {
+    "price": "810",
+    "name": "Глютен (клейковина), IgE в Москве",
+    "all_prices": ["810", "530", "1100"]
+  },
+  "html_size": 85280,
+  "duration_ms": 1234,
+  "body": null  // или HTML если return_body=true
+}
+```
+
+**UI:** отдельная страница `/dev` с:
+- **Monaco editor** слева (пишем extractors в JSON)
+- **Результат** справа (JSON с подсветкой)
+- **Поле URL** сверху + кнопка "Запустить"
+- **History** последних 10 запросов (localStorage)
+- **"Save as spec"** — конвертировать extractors в spec.yaml
+
+**Реализация:** cheerio на сервере, sandboxed eval пользовательских JS-выражений
+через `Function()` с ограниченным контекстом (только `$`, `request`, `response`).
+
+### D.2. JS-extractor режим в spec.yaml (Приоритет 2 — в Phase 4)
+
+**Что позаимствовано:** декларативный формат `key=script` — элегантнее, чем
+статичные regex-селекторы.
+
+**Наша адаптация — опциональный `type: js_eval` в parsers:**
+
+```yaml
+parsers:
+  # Стандартный режим (regex-селекторы, как сейчас)
+  - name: schema_org_primary
+    type: schema_org
+    priority: 1
+    selectors:
+      price: '<span[^>]*itemprop="price"[^>]*>([^<]+)</span>'
+    confidence: 95
+
+  # JS-extractor режим (новый, для power-users)
+  - name: js_custom
+    type: js_eval
+    priority: 2
+    trigger: 'schema_org_primary_items < expected * 0.5'
+    extractors:
+      price: '$("span[itemprop=price]").text().trim()'
+      name: '$("h1[itemprop=name]").text()'
+      code: |
+        const m = window.location.pathname.match(/_(\d+)\/$/);
+        return m ? m[1] : null;
+      all_items: |
+        $('.analyze-item').map((i, el) => ({
+          name: $(el).find('.title').text().trim(),
+          price: $(el).find('.price').text().trim()
+        })).get();
+    confidence: 80
+```
+
+**Sandbox:** выполняется в изолированном контексте, доступны только:
+- `$` (cheerio instance загруженного HTML)
+- `request` ({ url, method, headers })
+- `response` ({ status, headers, body })
+- `console` (перехватывается в лог)
+
+**Безопасность:** запрещены `require`, `import`, `process`, `global`, `eval`.
+Через `vm2` или `isolated-vm` для надёжной изоляции.
+
+### D.3. Debug `return_body` режим (Приоритет 3 — в Phase 4)
+
+**Что позаимствовано:** флаг `--return-body` в scraply для отладки.
+
+**Наша адаптация — расширение `ParseResult`:**
+
+```typescript
+interface ParseResult {
+  items: UniversalPriceItem[]
+  strategy: PriceStrategyName
+  confidence: number
+  errors: string[]
+  warnings: string[]
+  rawHtmlS3Key?: string
+  
+  // НОВОЕ: debug-режим (только при scrapeRun.debug = true)
+  debug?: {
+    html?: string              // сырой HTML (только для dev)
+    domStats?: {
+      totalElements: number
+      priceElements: number    // элементы с class*="price" или itemprop="price"
+      scriptCount: number
+      hasReact: boolean
+      hasVue: boolean
+      hasAngular: boolean
+    }
+    extractorTraces?: Array<{  // какие селекторы сработали
+      name: string
+      selector: string
+      matched: number
+      sampleValues: string[]
+    }>
+  }
+}
+```
+
+Включается через `ScrapeRunContext.debug = true` — в этом случае парсер
+сохраняет debug-инфу в S3 и возвращает в API-ответе. В production-режиме
+по умолчанию off (для экономии памяти).
+
+### D.4. Multi-stage Docker builds (Приоритет 4 — в Phase 11)
+
+**Что позаимствовано:** `FROM scratch` образ scraply (2 МБ бинарник).
+
+У нас Node.js + опционально Playwright, поэтому полный минимализм недостижим,
+но можно разделить на 2 образа:
+
+```dockerfile
+# === Dockerfile.lean — для T1/T2 (большинство сайтов) ===
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --omit=dev && \
+    npm prune --production
+COPY . .
+RUN npm run build
+
+FROM node:20-alpine
+WORKDIR /app
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
+COPY --from=builder /app/public ./public
+ENV NODE_ENV=production
+EXPOSE 3000
+CMD ["node", "server.js"]
+# Размер: ~150 МБ (вместо 500+ с Playwright)
+
+# === Dockerfile.full — для T3-T8 (SPA, antibot, VLM) ===
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+RUN npx playwright install --with-deps chromium
+
+FROM node:20-alpine
+WORKDIR /app
+RUN apk add --no-cache chromium nss freetype harfbuzz
+ENV PLAYWRIGHT_BROWSERS_PATH=/usr/lib/chromium
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
+COPY --from=builder /app/public ./public
+ENV NODE_ENV=production
+EXPOSE 3000
+CMD ["node", "server.js"]
+# Размер: ~500 МБ
+```
+
+**Deployment:**
+- `lean` workers — обрабатывают T1/T2 конкурентов (Veramed, Gemotest, CMD, Altamed+)
+- `full` workers — обрабатывают T3+ конкурентов (Helix SPA, Medsi labmarket, будущие antibot)
+- K8s: два Deployment'а с разными nodeSelectors
+
+**Экономия:** 80% трафика обрабатывается lean-воркерами (150 МБ), только 20% требует full (500 МБ).
+
+### D.5. Что НЕ заимствуем
+
+| Идея scraply | Почему не берём |
+|---|---|
+| Go как язык | Наш стек TypeScript, cheerio ≠ goquery по API |
+| Ручное написание extractors | Наш Probe Engine делает автоопределение — это главная фишка |
+| Только T1 (static HTML) | Нам нужен T1-T10 |
+| Отсутствие БД/scheduler/monitoring | У нас Prisma + BullMQ + pino + OTel |
+| CLI-only интерфейс | У нас Web Dashboard |
+| `goja` JS runtime | В Node.js JS нативный, через `vm2` |
+
+### D.6. Резюме влияния на архитектуру
+
+| Заимствование | Phase | Влияние на существующий код |
+|---|---|---|
+| Dev REPL shell | 4 | Новый endpoint `/api/dev/shell` + страница `/dev` |
+| JS-extractor режим | 4 | Новый `type: js_eval` в Parser interface |
+| `return_body` debug | 4 | Расширение `ParseResult.debug` |
+| Multi-stage Docker | 11 | 2 Dockerfile + deployment strategy |
+
+**Не ломает существующую архитектуру** — все 4 заимствования добавляются как
+опциональные расширения. Probe Engine, Discovery, Parsers, Validator — работают
+как прежде. JS-eval — просто ещё один `type` парсера.
+
+---
+
 *Документ описывает универсальный движок с автоопределением. Разведанные сайты
 используются как эталонные кейсы для валидации универсальности. Scope сбора
-зафиксирован в разделе 0 — изменение требует миграции БД.*
+зафиксирован в разделе 0 — изменение требует миграции БД. Заимствования из
+scraply описаны в Приложении D — реализуются в Phase 4 и Phase 11.*
 

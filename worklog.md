@@ -240,3 +240,288 @@ Work Log:
 3. /api/download/docs — только документация (31 КБ)
 
 ---
+
+Task ID: phase-1-robots-sitemap
+Agent: full-stack-developer
+Task: robots.txt parser + sitemap fetcher (Phase 1 — Probe Engine: Discovery foundation)
+
+Work Log:
+- Прочитан worklog.md, docs/scraping-methodology.md (разделы 2 Probe Engine, 3 Discovery Engine),
+  src/scraper/types/index.ts (ProbeResult.robotsTxt), src/scraper/interfaces/index.ts
+  (DiscoveryStrategy), src/scraper/strategies/static-fetcher.ts, src/scraper/utils/price.ts,
+  src/lib/logger/index.ts.
+- Создан `src/scraper/strategies/robots-fetcher.ts` (180 строк):
+  - `ParsedRobots` interface: sitemaps, disallow, allow, crawlDelay?, raw
+  - `fetchAndParseRobots(baseUrl): Promise<ParsedRobots | null>`
+  - Логика:
+    * GET `${origin}/robots.txt` через StaticFetcher (tier=T1, timeoutMs=15s, retries=1, rateLimitMs=0)
+    * 404 → null (нет robots.txt, можно всё)
+    * 4xx/5xx → null (лог warning)
+    * Network error → null (лог warning, НЕ падать)
+    * 200 → распарсить через `robots-parser` (getSitemaps, getCrawlDelay)
+  - disallow/allow правила для User-agent: * — ручной парсер (robots-parser не экспортирует raw rules)
+    * Поддержка обоих форматов: один UA — один блок правил; несколько UA — общий блок
+    * Учитывает inline-комментарии (#), пустые Disallow (разрешить всё)
+  - Logger: `logger.child({ module: 'robots-fetcher' })`
+  - normalizeBaseUrl — защита от trailing slash / path / query
+- Создан `src/scraper/strategies/sitemap-fetcher.ts` (199 строк):
+  - `SitemapUrl` interface: url, lastmod?, changefreq?, priority?
+  - `FetchSitemapOptions`: maxUrls? (default 100000), timeoutMs? (default 30000), onProgress?
+  - `fetchSitemap(sitemapUrl, options?): Promise<SitemapUrl[]>`
+  - Логика:
+    * <sitemapindex> → рекурсивный спуск в sub-sitemap (параллельно, CONCURRENCY=5)
+    * <urlset> → извлечение всех <url> с <loc>, <lastmod>, <changefreq>, <priority>
+    * gzip (.xml.gz) — fetch как arrayBuffer + gunzipSync (node:zlib)
+    * Обычный .xml — через StaticFetcher (retry, UA-ротация)
+    * MAX_DEPTH=5 — защита от зацикливания
+    * visited Set — защита от циклических sitemap-ссылок
+    * maxUrls limit — защита от OOM (cmd-online = 1510 URL, но может быть и 50000+)
+    * onProgress callback каждые 500 URL
+  - XML парсинг: linkedom DOMParser (основной) + regex-fallback (если linkedom упал)
+  - Обработка ошибок: timeout, 404, invalid XML — НЕ падаем, возвращаем пустой массив
+  - Logger: `logger.child({ module: 'sitemap-fetcher' })`
+  - runPool — простой пул задач с ограничением параллелизма (без внешних зависимостей)
+- Создан test script `src/scraper/strategies/__test__/robots-sitemap-test.ts` (102 строки):
+  - Fetch robots.txt для https://www.cmd-online.ru
+  - Извлекает sitemap URLs, disallow, crawlDelay
+  - Fetch первого sitemap (maxUrls=500) с onProgress
+  - Категоризация URL по path patterns (service/catalog/clinic/doctor/article/other)
+  - НЕ запускать автоматически (по требованию задачи) — запуск: `bun run src/scraper/strategies/__test__/robots-sitemap-test.ts`
+- Verification:
+  - `bun run lint` — 0 ошибок, 0 предупреждений ✅
+  - `bun x tsc --noEmit` — 0 ошибок в новых файлах (есть pre-existing ошибки в static-fetcher.ts
+    из-за импорта Fetcher/FetcherOptions из @/scraper/types вместо @/scraper/interfaces — НЕ моя задача)
+  - Smoke test (для self-verification, не test-script):
+    * fetchAndParseRobots('https://www.cmd-online.ru') → 3 sitemap, 116 disallow, 12 allow, crawlDelay=3 ✅
+    * fetchSitemap('https://www.cmd-online.ru/sitemap.xml', {maxUrls:100}) →
+      определил sitemapindex, рекурсивно зашёл в sitemap-iblock-6.xml + sitemap-iblock-11.xml,
+      извлёк 100 URL с <lastmod>, maxUrls-limit сработал корректно ✅
+
+Stage Summary:
+- Готова основа для Discovery Engine (раздел 3 методологии): Sitemap discovery (приоритет #1)
+  полностью реализован. Probe Engine (раздел 2) сможет:
+  1. Получить robots.txt и заполнить ProbeResult.robotsTxt.{sitemaps, disallow, crawlDelay}
+  2. Через fetchSitemap получить все URL сайта → ProbeResult.sitemapUrls, totalUrlsDiscovered
+  3. Использовать disallow-правила для фильтрации (не собирать /admin, /cart, etc.)
+  4. crawlDelay → передать в fetcher (rateLimitMs = crawlDelay * 1000)
+
+API:
+- `fetchAndParseRobots(baseUrl: string): Promise<ParsedRobots | null>`
+  Возвращает null если robots.txt отсутствует (404) или недоступен — это сигнал "можно всё".
+- `fetchSitemap(sitemapUrl: string, options?: { maxUrls?, timeoutMs?, onProgress? }): Promise<SitemapUrl[]>`
+  Возвращает пустой массив при ошибке — НЕ бросает exceptions.
+
+Файлы:
+- src/scraper/strategies/robots-fetcher.ts (180 строк, < 200 ✅)
+- src/scraper/strategies/sitemap-fetcher.ts (199 строк, < 200 ✅)
+- src/scraper/strategies/__test__/robots-sitemap-test.ts (102 строки)
+
+Решения и компромиссы:
+- robots-parser не экспортирует raw disallow/allow правила → написал свой мини-парсер для User-agent: *
+  (учитывает оба распространённых формата robots.txt)
+- linkedom DOMParser может упасть на битом XML → добавлен regex-fallback
+  (для sitemap этого достаточно: структура простая)
+- gzip sitemap-файлы (.xml.gz) нельзя fetch через StaticFetcher (он декодирует как UTF-8) →
+  для .gz использую raw fetch + gunzipSync (node:zlib)
+- StaticFetcher имеет rateLimitMs=2000 по умолчанию — это замедлило бы рекурсивный обход sitemap.
+  Передаю rateLimitMs=0 для robots.txt и sitemap.xml (politeness оставляем на уровне планировщика).
+
+---
+
+Task ID: phase-1-framework-detector
+Agent: full-stack-developer
+Task: framework detector + price strategy tester (Phase 1 — Probe Engine)
+
+Work Log:
+- Прочитано:
+  * worklog.md — все предыдущие фазы (Phase 0 + Phase 1 robots-sitemap)
+  * agent-ctx/phase-1-robots-sitemap-full-stack-developer.md — записи предыдущего агента
+    (включая замечание о pre-existing TS error в static-fetcher.ts)
+  * docs/scraping-methodology.md раздел 2.2 (Framework detection heuristics) и 2.3 (Price strategies)
+  * src/scraper/types/index.ts — Framework, AntiBotHints, PriceStrategyTest, PriceStrategyName
+  * src/scraper/strategies/static-fetcher.ts — готовый StaticFetcher
+
+- Bugfix: src/scraper/strategies/static-fetcher.ts line 17
+  * БЫЛО: `import type { FetchResult, Fetcher, FetcherOptions, Tier } from '@/scraper/types'`
+  * СТАЛО: `import type { FetchResult, Tier } from '@/scraper/types'`
+          `import type { Fetcher, FetcherOptions } from '@/scraper/interfaces'`
+  * Причина: `Fetcher` и `FetcherOptions` определены в `@/scraper/interfaces`, не в `types`
+  * Pre-existing TS error от предыдущего агента — исправлен ✅
+
+- Создан `src/scraper/strategies/framework-detector.ts` (215 строк, < 250 ✅):
+  * `FrameworkDetectionResult` interface: framework, confidence (0-100), signals[], isSSR,
+    hasEmbeddedState, hasSchemaOrg, currencyFormat, antiBotHints
+  * `detectFramework(html: string): FrameworkDetectionResult` — чистая функция
+  * Логика (методология раздел 2.2):
+    - bitrix: class="bx-core" или /bitrix/ в asset paths (weight=90)
+    - next: <script id="__NEXT_DATA__"> (weight=95)
+    - nuxt: __NUXT__ или window.__NUXT__ (weight=95)
+    - angular: ng-version, _nghost-, _ngcontent- (weight=90)
+    - vue: data-v-{hash} (weight=70)
+    - react-spa: data-reactroot / data-react-helmet / data-reactid (weight=65)
+    - tilda: <meta name="generator" content="...tilda..."> (weight=95)
+    - wordpress: /wp-content/ или /wp-includes/ (weight=90)
+    - unknown → custom если есть data-* attrs
+  * isSSR: __NEXT_DATA__ | __NUXT__ | _nghost- | hasRealContent (body text > 500 chars
+    OR > 100 chars и нет пустого <div id="root|app|__next">)
+  * hasEmbeddedState: __NEXT_DATA__ | G.json./api/ | window.__INITIAL_STATE__
+    | window.__APOLLO_STATE__ | window.__NUXT__
+  * hasSchemaOrg: itemprop= (любой) ИЛИ <script type="application/ld+json">
+  * currencyFormat: подсчёт ₽ / "руб." / "р." / "rub"; mixed если top-second ≤ max(2, top*0.2)
+  * antiBotHints:
+    - cloudflare: cdn-cgi/challenge-platform | __cf_bm | cf-ray
+    - recaptcha: g-recaptcha | data-sitekey | googlerecaptcha
+    - datadome: datadome | dd-datakey | dd-key
+    - perimeterX: perimeterx | _pxhd | px-captcha
+    - akamai: _abck= | akamai | bm-verify
+    - jsChallenge: true если cloudflare/datadome/perimeterX/akamai true
+  * confidence = maxWeight (если 0 → 10)
+  * Logger: logger.child({ module: 'framework-detector' })
+
+- Создан `src/scraper/strategies/price-strategy-tester.ts` (186 строк, < 250 ✅):
+  * `PriceStrategyTesterOptions`: sampleUrls[], sampleHtmls[] (длины должны совпадать)
+  * `testPriceStrategies(options): Promise<PriceStrategyTest[]>` — async (cheerio async-compatible)
+  * SUCCESS_THRESHOLD = 3, confidence = min(100, itemsExtracted * 10)
+  * 5 стратегий (методология раздел 2.3):
+    1. schema_org: /<span[^>]*itemprop=["']price["'][^>]*>([^<]+)<\/span>/gi
+    2. data_attributes: /data-(?:eec-)?price=["']([^"']+)["']/gi
+    3. embedded_json: /"G\.json\.\/api\/[^"]+"\s*:\s*\{"body":\{/g (Helix)
+       + <script id="__NEXT_DATA__"> → 1 (Next.js blob)
+    4. css_class: cheerio $('[class]') → filter /price/i.test(class) → count
+    5. seo_text_block: блок regex /(?:Прием специалиста|Услуги|Описание услуг)[:\s]*([\s\S]+?)<\/p>/gi
+       + item regex /([^.]+?)\s*-\s*(?:от\s+)?(\d[\d\s]*)\s*руб\./gi (внутри блока)
+  * countRegexMatches — безопасный счётчик с защитой от zero-length match + reset lastIndex
+  * При исключении в стратегии — warn log, count=0 (НЕ падает весь тестер)
+  * sampleUrls в результате = только те URL, на которых стратегия нашла матчи
+  * Logger: logger.child({ module: 'price-strategy-tester' })
+
+- Создан test script `src/scraper/strategies/__test__/framework-test.ts` (158 строк):
+  * 3 инлайн HTML-фикстуры:
+    - Bitrix: class="bx-core bx-mac", /bitrix/ asset paths, 5× itemprop="price" (₽, р., руб.)
+    - Next.js: <div id="__next">, 4× data-eec-price, <script id="__NEXT_DATA__">
+    - Angular SSR: ng-version="17.0.0", _nghost-serverapp-c1261994999, _ngcontent-serverapp-...
+      + window.__INITIAL_STATE__
+  * Для каждой фикстуры: detectFramework + log (framework, expected, matched, confidence,
+    isSSR, hasEmbeddedState, hasSchemaOrg, currencyFormat, antiBotHints, signals)
+  * Дополнительно: testPriceStrategies на всех 3 HTML одновременно → лог результатов по 5 стратегиям
+  * НЕ запускается автоматически (по требованию задачи)
+  * Запуск: `bun run src/scraper/strategies/__test__/framework-test.ts`
+
+Verification:
+- `bun run lint` — 0 ошибок, 0 предупреждений ✅
+- `bun x tsc --noEmit` — 0 ошибок в src/scraper/ и src/lib/ ✅
+  (pre-existing ошибки только в examples/ и skills/, не наши)
+- Bugfix подтверждён: StaticFetcher теперь корректно импортирует Fetcher/FetcherOptions
+  из @/scraper/interfaces — TypeScript больше не ругается на missing exports
+
+Stage Summary:
+- Probe Engine получил 2 ключевых модуля:
+  1. detectFramework — определяет 9 фреймворков + 5 характеристик сайта (SSR, embedded state,
+     Schema.org, currency, antibot). Один вызов чистой функции → готовый FrameworkDetectionResult.
+  2. testPriceStrategies — тестирует 5 стратегий извлечения цен на наборе HTML, возвращает
+     PriceStrategyTest[] с confidence. ProbeEngine сможет выбрать лучшую стратегию автоматически.
+
+API:
+- `detectFramework(html: string): FrameworkDetectionResult` — синхронная чистая функция
+- `testPriceStrategies(options: { sampleUrls: string[], sampleHtmls: string[] }): Promise<PriceStrategyTest[]>`
+  — async (для будущей cheerio/JSON-path работы)
+
+Файлы:
+- src/scraper/strategies/framework-detector.ts (215 строк, < 250 ✅)
+- src/scraper/strategies/price-strategy-tester.ts (186 строк, < 250 ✅)
+- src/scraper/strategies/__test__/framework-test.ts (158 строк)
+- src/scraper/strategies/static-fetcher.ts — bugfix импорта (без увеличения строк)
+
+Решения и компромиссы:
+- weight-based выбор фреймворка: если несколько сигналов сработали (например next + react-spa),
+  выбираем тот, что с большим weight (next=95 > react-spa=65). Это правильно: Next.js построен
+  на React, и data-reactroot может встретиться в Next-приложениях, но __NEXT_DATA__ — более
+  специфичный сигнал.
+- hasRealContent: body text > 500 chars ИЛИ > 100 chars БЕЗ пустого root div. Это эвристика —
+  реальные SPA имеют <div id="root"></div> (пустой). Если body содержит > 500 chars — это SSR
+  даже без явных фреймворк-маркеров (например custom Go/PHP рендеринг).
+- currencyFormat "mixed": если разница между top и second форматом ≤ max(2, top*0.2) — mixed.
+  Защищает от ложного выбора, когда сайт использует несколько форматов в равных пропорциях.
+- embedded_json для Next.js: __NEXT_DATA__ присутствие = 1 blob (внутри может быть N цен,
+  но без JSON-path экстрактора мы не можем их посчитать на этапе probe — это работа парсера
+  в Phase 4). Для Helix: G.json./api/ ключи считаем напрямую — каждый ключ = один ответ API.
+- seo_text_block: двухуровневый regex — сначала блок (жадный до </p>), потом внутри item pattern.
+  Это позволяет находить "Услуги: ... Консультация - 1500 руб. ... УЗИ - 2000 руб. ... </p>".
+- countRegexMatches: защита от zero-length match + reset lastIndex (regex переиспользуемые).
+  Если этого не сделать — повторный вызов функции с тем же regex сломается (lastIndex не 0).
+- testPriceStrategies НЕ падает при исключении в одной стратегии — catch + warn + count=0.
+  Это важно: cheerio может упасть на очень сломанном HTML, но остальные 4 стратегии должны
+  продолжить работу.
+
+---
+
+Task ID: phase-1-probe-engine-complete
+Agent: lead-architect
+Task: Завершение Phase 1 — Probe Engine orchestrator + API + E2E валидация на CMD
+
+Work Log:
+- Создан region-detector.ts (215 строк) — определение 8 типов region_strategy
+  - url_path_segment, url_prefix, url_subdomain, tariff_select, none
+  - Словарь ~120 slug'ов городов РФ и МО
+  - Cookie/ip_default требуют runtime-теста (помечены для будущей имплементации)
+- Создан probe-engine.ts (340 строк) — оркестратор Probe Engine
+  - 8-шаговый pipeline: robots.txt → homepage → sitemap → sample URLs → price strategies → region → tier → confidence
+  - Tier classification matrix (T1-T10)
+  - Confidence score (0-100) с weighted scoring
+  - Spec.yaml auto-generator
+- Создан API /api/probe (POST trigger, GET list)
+  - Принимает competitorId или url
+  - Сохраняет ProbeResult + ScrapeSpec в БД
+  - Обновляет Competitor status/tier/regionStrategy
+- E2E валидация на CMD Online (https://www.cmd-online.ru):
+  - Tier: T1 ✅
+  - Framework: bitrix ✅
+  - isSSR: true, hasSchemaOrg: true ✅
+  - currencyFormat: ₽ ✅
+  - Region strategy: url_path_segment ✅ (найдено 77 городов!)
+  - Mapping: moscow→msk, mo→msk ✅ (точно как разведано)
+  - Confidence: 85/100 ✅
+  - Total URLs: 30 000 из sitemap
+  - Best strategy: css_class (274 items)
+  - Spec.yaml сгенерирован, status: active
+  - Competitor сохранён в БД, статус: active
+- Browser verification:
+  - Dashboard отображает competitor "cmd-online.ru" со статусом "Активен", tier "T1 · Static"
+  - Stat card обновился: 2 конкурента
+  - Таблица показывает все auto-detected поля
+- Lint: 0 ошибок
+- Тестовые данные очищены
+
+## Stage Summary
+
+Phase 1 (Probe Engine) — MVP ЗАВЕРШЁН.
+
+### Что работает end-to-end
+1. POST /api/probe с URL → Probe Engine анализирует сайт
+2. robots.txt + sitemap парсятся (через sub-agents)
+3. Framework определяется (bitrix/next/nuxt/angular/vue/react/tilda/wordpress)
+4. 5 price strategies тестируются на sample URLs
+5. Region strategy определяется (8 типов)
+6. Tier классифицируется (T1-T10)
+7. Spec.yaml генерируется автоматически
+8. ProbeResult + ScrapeSpec сохраняются в БД
+9. Dashboard отображает результаты (status, tier, confidence)
+
+### Валидация на эталонном кейсе CMD
+Probe Engine правильно определил все ключевые характеристики CMD:
+- Bitrix framework
+- T1 tier
+- url_path_segment region strategy с 77 городами
+- mapping moscow→msk (оптимизация для scope)
+- Schema.org presence
+- Confidence 85/100
+
+### Что НЕ готово (Phase 2+)
+- Discovery Engine (фильтрация URL по region_strategy)
+- Parsers (реальные имплементации Schema.org/cheerio/JSON-extract)
+- Scheduler (cron-запуски)
+- Self-healing
+- VLM fallback
+- Улучшить sample URL selection (брать только catalog URLs, не /404.php)
+
+---

@@ -19,7 +19,7 @@ async function main() {
   await db.probeResult.deleteMany({})
   await db.competitor.deleteMany({})
 
-  // Create with preset
+  // Create with preset + probe result (for proper region mapping)
   const competitor = await db.competitor.create({
     data: {
       name: 'CMD Online',
@@ -30,7 +30,39 @@ async function main() {
       confidenceScore: 85,
     },
   })
-  log.info({ id: competitor.id }, 'Competitor created with preset')
+
+  // Create probe result with proper region mapping (so discovery filters correctly)
+  const probeReport = {
+    baseUrl: 'https://www.cmd-online.ru',
+    regionStrategy: {
+      type: 'url_path_segment' as const,
+      param: 'city_slug',
+      mapping: { moscow: 'msk', mo: 'msk' },
+      note: 'CMD: 77 cities in path segments, prices same across cities',
+    },
+    tier: 'T1_schema_org',
+    confidenceScore: 85,
+    sitemapUrls: ['https://www.cmd-online.ru/sitemap.xml'],
+    robotsTxt: { sitemaps: ['https://www.cmd-online.ru/sitemap.xml'], disallow: [] },
+  }
+  await db.probeResult.create({
+    data: {
+      competitorId: competitor.id,
+      probedAt: new Date(),
+      framework: 'bitrix',
+      isSSR: true,
+      hasEmbeddedState: false,
+      hasSchemaOrg: true,
+      currencyFormat: '₽',
+      tier: 'T1_schema_org',
+      regionStrategy: 'url_path_segment',
+      sitemapUrlsCount: 3,
+      priceUrlsCount: 30000,
+      confidenceScore: 85,
+      probeReportJson: JSON.stringify(probeReport),
+    },
+  })
+  log.info({ id: competitor.id }, 'Competitor created with preset + probe mapping')
 
   const result = await runScrape({
     competitorId: competitor.id,

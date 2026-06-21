@@ -322,6 +322,42 @@ function buildItem(
   const parsedPrice = parseCandidatePrice(candidate.priceRaw)
   if (!nameRaw || !parsedPrice) return null
 
+  // Filter out false positives: price < 10 RUB (1000 kopecks) is likely
+  // a unit of measurement (кЕд/л) or other non-price text, not a real service price
+  // Exception: "от" (min price) prices can be lower, but still > 10 RUB
+  const MIN_PRICE_KOPECKS = 1000 // 10 RUB
+  if (parsedPrice.price < MIN_PRICE_KOPECKS) return null
+
+  // Filter out suspiciously high prices: > 100,000 RUB (10,000,000 kopecks)
+  // is likely a code/id misinterpreted as price (e.g., data-code="130003")
+  const MAX_PRICE_KOPECKS = 10_000_000 // 100,000 RUB
+  if (parsedPrice.price > MAX_PRICE_KOPECKS) return null
+
+  // Filter out candidates where priceRaw is just the code (digits only, no currency)
+  // e.g., data-code="060756" misinterpreted as price "60756"
+  const candidateCode = cleanText(candidate.code || '')
+  if (
+    candidateCode &&
+    /^\d+$/.test(parsedPrice.raw.replace(/\s/g, '')) &&
+    candidateCode.includes(parsedPrice.raw.replace(/\s/g, ''))
+  ) {
+    return null
+  }
+
+  // For css_class strategy: if priceRaw is digits-only (no currency symbol)
+  // and length >= 5, it's likely a code/id from URL, not a real price
+  // Real prices from CSS usually have currency: "810 р.", "1 300 ₽"
+  if (
+    candidate.strategy === 'css_class' &&
+    /^\d{5,}$/.test(parsedPrice.raw.replace(/\s/g, ''))
+  ) {
+    return null
+  }
+
+  // Filter out names that look like units of measurement
+  // (short, no spaces, contains / like "кЕд/л", "мг/дл", "г/л")
+  if (/^[а-яa-z]{1,5}\/[а-яa-z]{1,5}$/i.test(nameRaw)) return null
+
   const code = cleanText(candidate.code || '')
   const slug = cleanText(candidate.slug || extractSlugFromUrl(url) || '')
   const externalIdType: ExternalIdType = code ? 'code' : slug ? 'slug' : 'name_hash'

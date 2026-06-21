@@ -1,4 +1,5 @@
 import type { RegionStrategy, UrlCategory } from '@/scraper/types'
+import { isKnownCitySlug } from '@/scraper/utils/city-slugs'
 
 const SERVICE_HINTS = [
   'analiz',
@@ -172,8 +173,30 @@ export function matchesTargetRegion(url: string, region: string, regionStrategy:
     return value ? normalizeToken(value) === normalizedTarget : true
   }
 
+  // url_path_segment or url_prefix: check path segments
   const pathSegments = parsed.pathname.split('/').filter(Boolean).map(normalizeToken)
-  return pathSegments.includes(normalizedTarget) || !hasAnyKnownRegionSegment(pathSegments, regionStrategy)
+
+  // If URL contains the target city slug → pass
+  if (pathSegments.includes(normalizedTarget)) return true
+
+  // If URL contains ANY known city slug that is NOT the target → reject
+  // This prevents podolsk/balashikha URLs when target is msk
+  const hasOtherCity = pathSegments.some(
+    (segment) => isKnownCitySlug(segment) && segment !== normalizedTarget
+  )
+  if (hasOtherCity) return false
+
+  // No city segment at all → pass (might be a generic page)
+  return true
+}
+
+// Debug version for testing
+export function matchesTargetRegionDebug(url: string, region: string, regionStrategy: RegionStrategy): boolean {
+  const result = matchesTargetRegion(url, region, regionStrategy)
+  if (!result) {
+    console.log(`[matchesTargetRegion] REJECTED: ${url} (region=${region}, target=${regionStrategy.mapping?.[region]})`)
+  }
+  return result
 }
 
 export function isLikelyPriceUrl(url: string, category = categorizeUrl(url)): boolean {

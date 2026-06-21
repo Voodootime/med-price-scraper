@@ -68,7 +68,10 @@ export class SitemapDiscoveryStrategy implements DiscoveryStrategy {
           const normalized = normalizeDiscoveryUrl(sitemapEntry.url)
           if (!normalized || discovered.has(normalized)) continue
           if (!isSameSite(origin, normalized)) continue
-          if (!matchesTargetRegion(normalized, options.region, options.regionStrategy)) continue
+          if (!matchesTargetRegion(normalized, options.region, options.regionStrategy)) {
+            log.debug({ url: normalized, region: options.region, strategy: options.regionStrategy.type }, 'URL rejected by region filter')
+            continue
+          }
 
           const category = categorizeUrl(normalized)
           if (!isLikelyPriceUrl(normalized, category)) continue
@@ -110,7 +113,7 @@ export class SitemapDiscoveryStrategy implements DiscoveryStrategy {
     options: DiscoveryOptions,
     errors: string[]
   ): Promise<string[]> {
-    const fromProbe = options.probeResult?.robotsTxt.sitemaps ?? options.probeResult?.sitemapUrls ?? []
+    const fromProbe = options.probeResult?.robotsTxt?.sitemaps ?? options.probeResult?.sitemapUrls ?? []
     if (fromProbe.length > 0) return uniqueValidUrls(fromProbe)
 
     try {

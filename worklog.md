@@ -1076,3 +1076,44 @@ Sync: ✅ local = origin/main
   → но probe занимает 2-3 минуты (sitemap 30k URL), нужен кеш
 
 ---
+
+Task ID: m2-prep-discovery-parser-fixes
+Agent: lead-architect
+Task: M2 подготовка — починить discovery region filter + parser false positives
+
+Work Log:
+- Проблема M1: discovery возвращал URL'ы разных городов (podolsk, balashikha, aleksin) вместо только msk
+  - Причина: matchesTargetRegion() пропускал URL'ы с неизвестными city-slug
+  - Решение: добавлена проверка isKnownCitySlug() — если URL содержит любой известный город ≠ target, отбрасывается
+  - Создан общий модуль src/scraper/utils/city-slugs.ts (130+ городов РФ)
+  - Добавлены пропущенные города: aleksin, kaluga, naro-fominsk, noyabrsk, udelnaya, sergiev-posad, ulan-ude
+  - region-detector.ts обновлён — использует общий city-slugs.ts (убран дубликат)
+
+- Проблема M1: false positives в parser (name="кЕд/л.", price=1 ₽; price=130003 RUB из code)
+  - Решение 1: MIN_PRICE filter — price < 10 RUB отбрасывается (единицы измерения)
+  - Решение 2: MAX_PRICE filter — price > 100,000 RUB отбрасывается (codes как цены)
+  - Решение 3: Code-as-price filter — если priceRaw совпадает с code, отбрасывается
+  - Решение 4: CSS class strategy — digits-only priceRaw ≥ 5 символов отбрасывается (URL codes)
+  - Решение 5: Unit-of-measurement name filter — паттерн 'мг/дл', 'г/л' отбрасывается
+
+- Bug fix: sitemap-discovery.ts — optional chaining (robotsTxt?.sitemaps вместо robotsTxt.sitemaps)
+
+- Тест m1-quick.ts обновлён:
+  - Создаёт proper ProbeResult с region mapping {moscow:msk, mo:msk}
+  - Это позволяет discovery корректно фильтровать URL по target region
+
+## Результат
+
+CMD scrape-run теперь даёт ЧИСТЫЕ данные:
+- status: success
+- items: 1 (без false positives)
+- Service: "Иммуноглобулин Е в Москве", price=790 RUB, code=130003
+- URL: /analizy-i-tseny/katalog-analizov/msk/ (правильный Moscow сегмент)
+- Стратегия: schema_org, confidence=95
+
+## Stage Summary
+
+M2 подготовка завершена. CMD теперь даёт чистые данные без false positives.
+Готовы к добавлению 2-го конкурента (Gemotest).
+
+---

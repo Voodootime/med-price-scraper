@@ -69,7 +69,7 @@ export class HtmlPriceParser implements Parser {
       ...extractSchemaOrgCandidates($, url),
       ...extractDataAttributeCandidates($),
       ...extractEmbeddedJsonCandidates($),
-      ...extractCssCandidates($),
+      ...extractCssCandidates($, url),
     ])
 
     const items: UniversalPriceItem[] = []
@@ -115,13 +115,18 @@ function extractSchemaOrgCandidates($: cheerio.CheerioAPI, url: string): RawPric
     const priceEl = $(el)
     const priceRaw = cleanText(priceEl.attr('content') || priceEl.text())
     const container = nearestUsefulContainer($, priceEl)
-    const nameRaw =
+    // Priority: container's itemprop=name → H1 → body's itemprop=name (skip head) → title
+    const containerName =
       cleanText(container.find('[itemprop="name"]').first().attr('content') || '') ||
-      cleanText(container.find('[itemprop="name"]').first().text()) ||
-      cleanText($('[itemprop="name"]').first().attr('content') || '') ||
-      cleanText($('[itemprop="name"]').first().text()) ||
-      cleanText($('h1').first().text()) ||
-      cleanText($('title').first().text())
+      cleanText(container.find('[itemprop="name"]').first().text())
+    const h1Name = cleanText($('h1').first().text())
+    // Skip [itemprop="name"] inside <head> (e.g., site name like "CMD")
+    const bodyName =
+      cleanText($('main [itemprop="name"]').first().attr('content') || '') ||
+      cleanText($('main [itemprop="name"]').first().text()) ||
+      cleanText($('body [itemprop="name"]').first().attr('content') || '') ||
+      cleanText($('body [itemprop="name"]').first().text())
+    const nameRaw = containerName || h1Name || bodyName || cleanText($('title').first().text())
 
     const currency = cleanText(
       container.find('[itemprop="priceCurrency"]').first().attr('content') ||
@@ -216,7 +221,7 @@ function extractEmbeddedJsonCandidates($: cheerio.CheerioAPI): RawPriceCandidate
   return candidates
 }
 
-function extractCssCandidates($: cheerio.CheerioAPI): RawPriceCandidate[] {
+function extractCssCandidates($: cheerio.CheerioAPI, url: string): RawPriceCandidate[] {
   const candidates: RawPriceCandidate[] = []
 
   $('tr').each((_index, el) => {
@@ -259,6 +264,7 @@ function extractCssCandidates($: cheerio.CheerioAPI): RawPriceCandidate[] {
       nameRaw,
       priceRaw,
       code: cleanText(container.attr('data-code') || node.attr('data-code') || ''),
+      slug: extractSlugFromUrl(url),
       sourceKey: `css:${nameRaw}:${priceRaw}`,
     })
   })
@@ -367,6 +373,7 @@ function pickResultStrategy(items: UniversalPriceItem[]): PriceStrategyName {
 
 function dedupeCandidates(candidates: RawPriceCandidate[]): RawPriceCandidate[] {
   const seen = new Set<string>()
+  const seenExternalId = new Set<string>()
   const sorted = [...candidates].sort((a, b) => b.confidence - a.confidence)
   const result: RawPriceCandidate[] = []
 
@@ -379,6 +386,12 @@ function dedupeCandidates(candidates: RawPriceCandidate[]): RawPriceCandidate[] 
     ].join('|')
     if (seen.has(key)) continue
     seen.add(key)
+
+    // Dedupe by externalId (slug or code) — keep only highest-confidence candidate per ID
+    const externalId = cleanText(candidate.code || '') || cleanText(candidate.slug || '') || normalizeName(candidate.nameRaw)
+    if (externalId && seenExternalId.has(externalId)) continue
+    if (externalId) seenExternalId.add(externalId)
+
     result.push(candidate)
   }
 

@@ -149,14 +149,21 @@ export async function runScrape(options: RunScrapeOptions): Promise<RunScrapeRes
     }
 
     const validator = getValidator()
-    const validation = validator.validateBatch(fetchedItems, DEFAULT_VALIDATION_RULES)
+    // Dedupe items by (region, locationKey, externalId) BEFORE validation
+    // Keep first occurrence (highest confidence, since parser already sorts)
+    const dedupedItems = dedupeByExternalId(fetchedItems)
+    log.info(
+      { before: fetchedItems.length, after: dedupedItems.length },
+      'Deduplicated items by externalId'
+    )
+    const validation = validator.validateBatch(dedupedItems, DEFAULT_VALIDATION_RULES)
     validationErrors.push(...validation.errors)
 
     const persisted = validation.ok
       ? await persistItems({
           competitorId: competitor.id,
           runId: run.id,
-          items: fetchedItems,
+          items: dedupedItems,
         })
       : { added: 0, changed: 0 }
 
@@ -164,7 +171,7 @@ export async function runScrape(options: RunScrapeOptions): Promise<RunScrapeRes
       urlsPlanned: plannedUrls.length,
       urlsSucceeded,
       urlsFailed,
-      itemsExtracted: fetchedItems.length,
+      itemsExtracted: dedupedItems.length,
       validationOk: validation.ok,
     })
     const finishedAt = new Date()
@@ -179,10 +186,10 @@ export async function runScrape(options: RunScrapeOptions): Promise<RunScrapeRes
         urlsFetched,
         urlsSucceeded,
         urlsFailed,
-        itemsExtracted: fetchedItems.length,
+        itemsExtracted: dedupedItems.length,
         itemsAdded: persisted.added,
         itemsChanged: persisted.changed,
-        nullFieldsRate: validation.itemsInvalid / Math.max(fetchedItems.length, 1),
+        nullFieldsRate: validation.itemsInvalid / Math.max(dedupedItems.length, 1),
         contentHash,
         errorMessage: status === 'success' ? null : validationErrors.slice(0, 10).join('\n'),
       },
@@ -204,7 +211,7 @@ export async function runScrape(options: RunScrapeOptions): Promise<RunScrapeRes
       urlsFetched,
       urlsSucceeded,
       urlsFailed,
-      itemsExtracted: fetchedItems.length,
+      itemsExtracted: dedupedItems.length,
       itemsAdded: persisted.added,
       itemsChanged: persisted.changed,
       validationErrors,
@@ -358,6 +365,22 @@ function canTryTrailingSlash(url: string): boolean {
   } catch {
     return false
   }
+}
+
+/**
+ * Deduplicate items by (region, locationKey, externalId).
+ * Keeps first occurrence (highest confidence if parser pre-sorted).
+ */
+function dedupeByExternalId(items: UniversalPriceItem[]): UniversalPriceItem[] {
+  const seen = new Set<string>()
+  const result: UniversalPriceItem[] = []
+  for (const item of items) {
+    const key = `${item.region}:${item.locationKey ?? ''}:${item.externalId}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    result.push(item)
+  }
+  return result
 }
 
 function resolveRegionStrategy(

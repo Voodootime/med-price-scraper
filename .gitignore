@@ -32,6 +32,7 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
 
 # vercel
 .vercel
@@ -52,3 +53,26 @@ prompt
 server.log
 # Skills directory
 /skills/
+
+# Database (SQLite local dev)
+db/*.db
+db/*.db-journal
+db/*.db-wal
+db/*.db-shm
+
+# Runtime data
+.zscripts/dev.pid
+data/
+tmp/
+
+# Tool results (internal)
+tool-results/
+
+# Agent context (internal handoffs)
+agent-ctx/
+
+# OS files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/

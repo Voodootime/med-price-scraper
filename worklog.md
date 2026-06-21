@@ -750,3 +750,83 @@ Findings:
 Репозиторий **полный и аккуратный**: все заявленные модули на месте, lint чистый, тесты запускаются успешно (framework-test.ts и robots-sitemap-test.ts отработали без ошибок). .env.example блокер закрыт. README актуализирован под текущее состояние (Phase 1 завершена). Все оставшиеся issues — за рамками текущей задачи (требуют архитектурных решений или правок в aux-кодах).
 
 ---
+
+Task ID: audit-final-verification
+Agent: lead-architect
+Task: Комплексная проверка репозитория на GitHub — security + code + E2E
+
+Work Log:
+- Security audit (sub-agent): 0 CRITICAL, 1 HIGH (.env.example missing), 4 MEDIUM (SSRF, auth, Caddy, history)
+- Code audit (sub-agent): 0 lint errors, 9 Prisma models, 7 dashboard components, все модули на месте
+- .env.example создан с 18 env vars (HIGH fix)
+- README.md обновлён: quick start, .env table, roadmap
+- Очистка worklog.md от фрагментов PAT токена (GitHub Push Protection заблокировал push)
+- Force-clean: удалены все упоминания ghp_* паттернов из worklog
+- Push успешно выполнен после очистки
+- E2E валидация:
+  - GET /api/health → 200, status=ok, db=ok, config=ok ✅
+  - GET /api/competitors → 200, total=0 ✅
+  - GET /api/download/docs → 200, 49 КБ ✅
+  - GET /api/download/project → 200, 251 КБ ✅
+  - POST /api/probe (CMD Online) → 201:
+    - Tier: T1 ✅
+    - Framework: bitrix ✅
+    - Confidence: 85/100 ✅
+    - Region strategy: url_path_segment ✅
+    - URLs discovered: 30 000 ✅
+    - Best strategy: css_class ✅
+    - Spec status: active ✅
+- Browser verification:
+  - Dashboard рендерится: header + 4 stat cards + competitors table + timeline + footer
+  - CMD competitor: "Активен" badge, "T1 · Static" tier
+  - 0 errors, 0 console errors
+- Git sync: local = origin/main = c1a5dbe ✅
+- Security: 0 token fragments in all commits ✅
+- Lint: 0 errors ✅
+- Test data cleaned (Competitor, ProbeResult, ScrapeSpec)
+
+## Stage Summary
+
+Репозиторий https://github.com/Voodootime/med-price-scraper полностью валидирован:
+
+### ✅ Security (0 critical)
+- 0 секретов в git history (проверено по всем 15 коммитам)
+- .env, db/custom.db, tool-results/, agent-ctx/ НЕ в репозитории
+- .gitignore покрывает все sensitive категории
+- .env.example создан как шаблон (без реальных секретов)
+- GitHub Push Protection активен (auto-detect секретов при push)
+
+### ✅ Code Quality
+- ESLint: 0 ошибок, 0 предупреждений
+- TypeScript: основной код src/ компилируется чисто
+- 9 Prisma моделей корректно определены
+- 7 dashboard компонентов на месте
+- 11 scraper модулей (types, interfaces, utils + 7 strategies)
+- 6 API endpoints работают
+- 0 дубликатов функций
+- 0 dead code
+- 1 stale TODO исправлен
+
+### ✅ Completeness
+- README.md с quick start, архитектурой, roadmap
+- docs/scraping-methodology.md — 1847 строк методологии
+- worklog.md — журнал разработки
+- .env.example — 18 env vars с описаниями
+- prisma/schema.prisma — 9 моделей
+- Все заявленные модули существуют и непустые
+
+### ✅ E2E Works
+- Dev server: http://localhost:3000 (uptime 2737s)
+- Health endpoint: status=ok
+- Probe Engine: валидирован на CMD Online (tier=T1, confidence=85)
+- Dashboard: рендерит конкурентов со auto-detected полями
+- Download endpoints: docs (49 КБ) + project (251 КБ)
+
+### Known issues (не блокеры, для будущих фаз)
+- M2: SSRF в /api/probe (нужен private-IP filter)
+- M3: Нет auth на API endpoints (next-auth установлен, не используется)
+- M4: Caddyfile open port-forwarding (для production нужно whitelist)
+- L1: next.config.ts ignoreBuildErrors=true (нужно выключить после фикса TS в examples/)
+- L2: API routes возвращают error.details (может leak internals)
+
+---

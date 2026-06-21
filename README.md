@@ -14,6 +14,8 @@
   с приоритетами P0-P6 и ближайшими Definition of Done.
 - **[docs/development-roadmap-detailed.md](docs/development-roadmap-detailed.md)** — детальный
   план этапов разработки, критерии готовности, риски и ближайшие инженерные задачи.
+- **[docs/testing-guide.md](docs/testing-guide.md)** — полный сценарий тестирования:
+  от клонирования до проверки боевого scrape-run на CMD Online.
 - **[worklog.md](worklog.md)** — журнал разработки мультиагентной команды.
 
 ## 🚀 Быстрый старт

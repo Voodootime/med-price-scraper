@@ -1,7 +1,7 @@
 // Prisma schema for Universal Medical Price Scraper
 // Документация архитектуры: docs/scraping-methodology.md
 //
-// 8 моделей покрывают полный цикл:
+// 9 моделей покрывают полный цикл:
 //   Region → AppConfig (scope)
 //   Competitor → ProbeResult (история probe)
 //   Competitor → ScrapeSpec (версии spec.yaml, auto-generated)

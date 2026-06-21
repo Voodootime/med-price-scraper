@@ -7,7 +7,7 @@
 ## 📖 Документация
 
 - **[docs/scraping-methodology.md](docs/scraping-methodology.md)** — полная методология
-  (1600 строк): классификация тиров, Probe Engine, Discovery Engine, Schema inference,
+  (1847 строк): классификация тиров, Probe Engine, Discovery Engine, Schema inference,
   Adaptive parser, Universal data model, AI Skills, Roadmap, эталонные кейсы
   (Veramed, Gemotest, Helix, Altamed+, Medsi, CMD).
 - **[worklog.md](worklog.md)** — журнал разработки мультиагентной команды.
@@ -18,7 +18,11 @@
 # Установка зависимостей
 bun install
 
-# Инициализация БД
+# Создание .env из шаблона (минимум DATABASE_URL обязателен)
+cp .env.example .env
+# отредактируй .env: укажи TARGET_REGION и при необходимости ZAI_API_KEY
+
+# Инициализация БД (Prisma + SQLite)
 bun run db:push
 bun run db:seed
 
@@ -26,6 +30,9 @@ bun run db:seed
 bun run dev
 # → http://localhost:3000
 ```
+
+Полный список env-переменных (18 шт.) и их значения по умолчанию —
+в [`src/lib/config/index.ts`](src/lib/config/index.ts) (zod-схема) и в [`.env.example`](.env.example).
 
 ## 🏗️ Архитектура
 
@@ -74,20 +81,33 @@ src/
 
 ## ⚙️ Конфигурация (.env)
 
+Минимальный набор для запуска:
+
 ```env
 DATABASE_URL=file:./db/custom.db
 TARGET_REGION=mo              # moscow | mo | spb
 LOG_LEVEL=info
-DEFAULT_RATE_LIMIT_MS=2000
-DEFAULT_CONCURRENCY=5
-VLM_DAILY_QUOTA=100
-LLM_DAILY_QUOTA=1000
 ```
+
+Полный список (18 переменных): см. [`.env.example`](.env.example).
+Валидация — через zod-схему в [`src/lib/config/index.ts`](src/lib/config/index.ts) (fail-fast при ошибке).
+
+| Категория | Переменные |
+|---|---|
+| Core | `NODE_ENV`, `DATABASE_URL`, `PORT` |
+| Scope | `TARGET_REGION` |
+| Logging | `LOG_LEVEL` |
+| Rate limits | `DEFAULT_RATE_LIMIT_MS`, `DEFAULT_CONCURRENCY`, `MAX_RETRIES` |
+| AI quotas | `VLM_DAILY_QUOTA`, `LLM_DAILY_QUOTA`, `WEB_READER_DAILY_QUOTA`, `WEB_SEARCH_DAILY_QUOTA` |
+| z-ai SDK | `ZAI_API_KEY` |
+| Storage | `RAW_LAKE_PATH`, `SCREENSHOTS_PATH` |
+| Proxy | `PROXY_URL`, `PROXY_USER`, `PROXY_PASS` |
+| Telegram | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` |
 
 ## 📈 Roadmap
 
 - ✅ **Phase 0:** Foundation (Prisma schema, interfaces, logger, config, dashboard)
-- 🔄 **Phase 1:** Probe Engine (автоопределение характеристик сайта)
+- ✅ **Phase 1:** Probe Engine (автоопределение характеристик сайта — `POST /api/probe`)
 - ⬜ **Phase 2:** Discovery Engine (поиск URL с ценами)
 - ⬜ **Phase 3:** Parsers (Schema.org, cheerio, JSON-extract, SPA)
 - ⬜ **Phase 4:** Schema Inference (heuristic + LLM)
@@ -97,3 +117,5 @@ LLM_DAILY_QUOTA=1000
 - ⬜ **Phase 8:** Self-healing
 - ⬜ **Phase 9:** VLM fallback
 - ⬜ **Phase 10:** Hardening (raw-lake, OTel, regression tests)
+
+Статус разработки по фазам и задачи мультиагентной команды — в [`worklog.md`](worklog.md).

@@ -80,8 +80,8 @@ export async function POST(req: NextRequest) {
 
     logger.info({ competitorId: competitor.id, name, baseUrl }, 'Competitor created')
 
-    // TODO: trigger Probe Engine в Phase 1
-    // Пока возвращаем как есть, probe запустится через отдельный endpoint
+    // Probe Engine запускается отдельно через POST /api/probe с { competitorId }.
+    // См. src/app/api/probe/route.ts и src/scraper/strategies/probe-engine.ts.
 
     return NextResponse.json({ competitor }, { status: 201 })
   } catch (e) {

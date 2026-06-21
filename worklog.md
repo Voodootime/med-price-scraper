@@ -935,3 +935,75 @@ PR #1 (codex/p0-hardening) успешно смержен в main через fast
 - Phase 11: Production-ready — not started
 
 ---
+
+Task ID: merge-pr-2-roadmap
+Agent: lead-architect
+Task: Merge PR #2 (детальная дорожная карта) в main
+
+Work Log:
+- Fetch origin/codex/p0-hardening — обнаружен новый коммит e645edf (docs: add detailed development roadmap)
+- Анализ PR #2: 2 файла, +411 строк
+  - docs/development-roadmap-detailed.md (409 строк) — детальная дорожная карта
+  - README.md — добавлена ссылка на новый документ
+- Изучено содержимое roadmap:
+  - 17 секций: цель продукта, текущее состояние, архитектурный принцип
+  - 7 milestones (M1-M7) с приоритетами и Definition of Done
+  - 4 ближайшие итерации с конкретными задачами
+  - Таблица рисков и мер контроля
+  - Definition of Ready для боевых тестов
+  - DoD для v0.1 и v0.2
+  - Правила хранения данных (что в GitHub vs local)
+  - Следующий engineering step: health-aware candidate loop + CMD live smoke
+- Fast-forward невозможен (есть локальные коммиты a0a3ab7, 57bc485)
+- Merge commit создан: b80bc1c
+- Push успешен, GitHub Push Protection прошёл
+- PR #2 автоматически отмечен как merged (verified через GitHub API)
+
+## Верификация
+
+### ✅ Git
+- Local = origin/main = b80bc1c (synced)
+- 141 файл tracked (+1 новый: development-roadmap-detailed.md)
+- 18 коммитов в истории
+- 2 PR смержены: #1 (03a803f) + #2 (b80bc1c)
+
+### ✅ Documentation
+- docs/scraping-methodology.md — 1847 строк (полная методология)
+- docs/product-roadmap.md — продуктовый roadmap P0-P6
+- docs/development-roadmap-detailed.md — 409 строк (новый, детальный план)
+- README.md — обновлён со ссылками на все документы
+- worklog.md — журнал разработки
+
+### ✅ Code Quality
+- ESLint: 0 ошибок, 0 предупреждений
+- 8 API endpoints работают (все 200)
+- Dashboard рендерится с Pipeline компонентом
+
+### ✅ Roadmap содержание (ключевые моменты)
+- M1: стабильный первый боевой scrape-run (CMD) — самый высокий приоритет
+- M2: покрытие 6 эталонных конкурентов (CMD, Gemotest, Helix, Veramed, Altamed+, Medsi)
+- M3: operator dashboard v1 (детализация scrape-run, services, prices)
+- M4: нормализация и сравнение цен (canonical names, ServiceMatch, CSV export)
+- M5: scheduler и alerts (cron, Telegram, retry policy)
+- M6: advanced fetchers (Playwright, HAR, PDF, VLM fallback)
+- M7: self-healing и schema inference (structure hash, reprobe, spec versioning)
+
+### Следующий engineering step (из roadmap)
+1. Реализовать health-aware candidate loop в scrape-runner
+2. Прогнать CMD live smoke
+3. Выбрать первую успешную карточку услуги
+4. Сохранить HTML как fixture
+5. Зафиксировать parser test
+6. Добиться записи Service и PriceSnapshot
+7. Обновить PR с результатом
+
+## Stage Summary
+
+PR #2 (детальная дорожная карта) успешно смержен в main.
+Репозиторий https://github.com/Voodootime/med-price-scraper теперь содержит
+полную документацию: методология + product roadmap + development roadmap.
+
+Оба PR смержены, main актуален, dev server работает.
+Готовы к Phase 2 (M1): реализация health-aware candidate loop для CMD end-to-end.
+
+---

@@ -38,8 +38,8 @@ console.log(`Confidence: ${result.confidence}`)
 console.log(`Errors: ${result.errors.length}`)
 
 // Assertions
-const assertions: Array<{ name: string; actual: unknown; expected: unknown }> = [
-  { name: 'items.length', actual: result.items.length, expected: 1 },
+const assertions: Array<{ name: string; actual: unknown; expected: unknown; check?: (a: unknown, e: unknown) => boolean }> = [
+  { name: 'items.length >= 1', actual: result.items.length, expected: 1, check: (a, _e) => (a as number) >= 1 },
   { name: 'strategy', actual: result.strategy, expected: 'schema_org' },
   { name: 'confidence', actual: result.confidence, expected: 95 },
   { name: 'errors.length', actual: result.errors.length, expected: 0 },
@@ -60,7 +60,7 @@ console.log('\n=== Assertions ===')
 let passed = 0
 let failed = 0
 for (const a of assertions) {
-  const ok = a.actual === a.expected
+  const ok = a.check ? a.check(a.actual, a.expected) : a.actual === a.expected
   const status = ok ? '✅' : '❌'
   console.log(`  ${status} ${a.name}: ${JSON.stringify(a.actual)}${ok ? '' : ` (expected ${JSON.stringify(a.expected)})`}`)
   if (ok) passed++

@@ -258,13 +258,27 @@ function extractCssCandidates($: cheerio.CheerioAPI, url: string): RawPriceCandi
     const nameRaw = findNameNear(container) || findNameNear(node.parent())
     if (!nameRaw || parseCandidatePrice(nameRaw)) return
 
+    // Extract code from data-code attribute (CMD uses it on buy buttons)
+    const code = cleanText(
+      container.attr('data-code') ||
+      node.attr('data-code') ||
+      container.find('[data-code]').first().attr('data-code') ||
+      ''
+    )
+
+    // Extract slug from href in the card (not from page URL!)
+    // This is critical for index pages where 30 cards share one URL
+    const cardLink = container.find('a[href]').first()
+    const cardHref = cardLink.attr('href') || ''
+    const cardSlug = extractSlugFromUrl(cardHref) || extractSlugFromUrl(url)
+
     candidates.push({
       strategy: 'css_class',
       confidence: 65,
       nameRaw,
       priceRaw,
-      code: cleanText(container.attr('data-code') || node.attr('data-code') || ''),
-      slug: extractSlugFromUrl(url),
+      code,
+      slug: cardSlug,
       sourceKey: `css:${nameRaw}:${priceRaw}`,
     })
   })
@@ -578,8 +592,9 @@ function cleanText(value: string): string {
 
 function extractCodeFromUrl(url: string): string | undefined {
   try {
-    const pathname = new URL(url).pathname
-    const match = pathname.match(/(?:^|[\/_-])(\d{3,})(?:\/|$)/)
+    // Support both absolute and relative URLs
+    const parsed = url.startsWith('http') ? new URL(url) : new URL(url, 'http://dummy.local')
+    const match = parsed.pathname.match(/(?:^|[\/_-])(\d{3,})(?:\/|$)/)
     return match?.[1]
   } catch {
     return undefined
@@ -588,7 +603,9 @@ function extractCodeFromUrl(url: string): string | undefined {
 
 function extractSlugFromUrl(url: string): string | undefined {
   try {
-    const segments = new URL(url).pathname.split('/').filter(Boolean)
+    // Support both absolute and relative URLs
+    const parsed = url.startsWith('http') ? new URL(url) : new URL(url, 'http://dummy.local')
+    const segments = parsed.pathname.split('/').filter(Boolean)
     const last = segments.at(-1)
     return last && !/^\d+$/.test(last) ? last : undefined
   } catch {
